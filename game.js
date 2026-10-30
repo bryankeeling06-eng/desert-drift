@@ -3,6 +3,9 @@
 'use strict';
 const SAVE_KEY = 'desertDrift.v1';
 const WORLD = 2400, HP_MAX = 20, TRACK_SCALE = 0.5;
+// Damage model: 3 car hits = game over (shown as 3 heart pips). Bumping obstacles/walls only wears the
+// 20-segment bar by BUMP_DMG, at most once per BUMP_CD seconds per obstacle (and BUMP_GLOBAL_CD overall).
+const MAX_HITS = 3, CAR_IFRAMES = 1.5, BUMP_DMG = 1, BUMP_CD = 1.0, BUMP_GLOBAL_CD = 0.35, BUMP_MIN_SPEED = 40;
 const cv = document.getElementById('game'), ctx = cv.getContext('2d');
 const muteBtn = document.getElementById('mute');
 let W = 0, H = 0, DPR = 1, ZOOM = 1;
@@ -121,10 +124,10 @@ trackCv.width = trackCv.height = WORLD * TRACK_SCALE;
 const tctx = trackCv.getContext('2d');
 
 const S = {
-  state: 'play', level: save.level, kills: 0, goal: 10, hp: HP_MAX, coins: save.coins, levelCoins: 0,
+  state: 'play', level: save.level, kills: 0, hits: 0, overT: 0, overWhy: '', bumpT: 0, wallCd: 0, goal: 10, hp: HP_MAX, coins: save.coins, levelCoins: 0,
   player: null, enemies: [], parts: [], debris: [], coinsOnGround: [], obstacles: [], plateaus: [], craters: [],
   spawnT: 0, iframes: 0, t: 0, flash: 0, clearT: 0, tally: 0, shake: 0, msg: '', msgT: 0,
-  stats: { trackSegs: 0, explosions: 0, coinsPicked: 0, hits: 0, spawns: 0 }
+  stats: { bumps: 0, trackSegs: 0, explosions: 0, coinsPicked: 0, hits: 0, spawns: 0 }
 };
 
 function makeCar(x, y, a, enemy) {
@@ -155,7 +158,7 @@ function buildLevel() {
   }
 }
 function startLevel() {
-  S.state = 'play'; S.kills = 0; S.goal = goalFor(S.level); S.hp = HP_MAX; S.levelCoins = 0;
+  S.state = 'play'; S.kills = 0; S.hits = 0; S.bumpT = 0; S.wallCd = 0; S.goal = goalFor(S.level); S.hp = HP_MAX; S.levelCoins = 0;
   S.enemies = []; S.parts = []; S.debris = []; S.coinsOnGround = []; S.spawnT = 1.2; S.iframes = 1.5; S.flash = 0;
   zones.clear(); steerCur = 0; nudgeT = 0;
   S.player = makeCar(WORLD / 2, WORLD / 2, -Math.PI / 2, false);
@@ -193,9 +196,10 @@ function driveCar(c, steer, dt) {
   c.vx += (tx - c.vx) * k; c.vy += (ty - c.vy) * k;
   c.x += c.vx * dt; c.y += c.vy * dt;
   // arena walls: bounce
-  const m = c.r;
-  if (c.x < m) { c.x = m; c.vx = Math.abs(c.vx) * 0.5; } if (c.x > WORLD - m) { c.x = WORLD - m; c.vx = -Math.abs(c.vx) * 0.5; }
-  if (c.y < m) { c.y = m; c.vy = Math.abs(c.vy) * 0.5; } if (c.y > WORLD - m) { c.y = WORLD - m; c.vy = -Math.abs(c.vy) * 0.5; }
+  const m = c.r; let wallHit = 0;
+  if (c.x < m) { wallHit = Math.max(wallHit, -c.vx); c.x = m; c.vx = Math.abs(c.vx) * 0.5; } if (c.x > WORLD - m) { wallHit = Math.max(wallHit, c.vx); c.x = WORLD - m; c.vx = -Math.abs(c.vx) * 0.5; }
+  if (c.y < m) { wallHit = Math.max(wallHit, -c.vy); c.y = m; c.vy = Math.abs(c.vy) * 0.5; } if (c.y > WORLD - m) { wallHit = Math.max(wallHit, c.vy); c.y = WORLD - m; c.vy = -Math.abs(c.vy) * 0.5; }
+  if (!c.enemy && wallHit > BUMP_MIN_SPEED) bump(S, 'wallCd');
   for (const o of S.obstacles) collideObstacle(c, o);
   drawTracks(c);
 }
@@ -212,7 +216,26 @@ function collideObstacle(c, o) {
     c.x = qx + nx * c.r; c.y = qy + ny * c.r;
   }
   const vn = c.vx * nx + c.vy * ny;
-  if (vn < 0) { c.vx -= 1.6 * vn * nx; c.vy -= 1.6 * vn * ny; if (!c.enemy && vn < -120) beep(110, 0.08, 'triangle', 0.12); }
+  if (vn < 0) {
+    c.vx -= 1.6 * vn * nx; c.vy -= 1.6 * vn * ny;
+    if (!c.enemy && vn < -BUMP_MIN_SPEED) { c.vx += nx * 60; c.vy += ny * 60; bump(o, 'cd'); }
+  }
+}
+// Obstacle/wall bump: small wear on the bar, never a car hit. Rate-limited per obstacle and globally.
+function bump(holder, key) {
+  if (S.state !== 'play') return;
+  if ((holder[key] || 0) > S.t || S.bumpT > S.t) return;
+  holder[key] = S.t + BUMP_CD; S.bumpT = S.t + BUMP_GLOBAL_CD;
+  S.hp = Math.max(0, S.hp - BUMP_DMG); S.stats.bumps++; S.shake = Math.max(S.shake, 4);
+  beep(110, 0.08, 'triangle', 0.14);
+  for (let i = 0; i < 4; i++) { const an = Math.random() * 6.28; S.parts.push({ x: S.player.x, y: S.player.y, vx: Math.cos(an) * 60, vy: Math.sin(an) * 60, r: 5, life: 0.35, max: 0.5, confetti: '#f4d9b0' }); }
+  if (S.hp <= 0) gameOver('bumps');
+}
+function gameOver(why) {
+  S.state = 'over'; S.overT = 0; S.overWhy = why; S.shake = 12;
+  explode(S.player.x, S.player.y, false);
+  save.coins = S.coins; persist();
+  beep(392, 0.18, 'triangle', 0.18); setTimeout(() => beep(330, 0.18, 'triangle', 0.18), 170); setTimeout(() => beep(262, 0.35, 'triangle', 0.18), 340);
 }
 function drawTracks(c) {
   const ca = Math.cos(c.a), sa = Math.sin(c.a), back = c.r * 0.7, side = c.r * (c.enemy ? 0.75 : 0.6);
@@ -259,6 +282,7 @@ function update(dt) {
     if (S.clearT > 1.6) { S.state = 'clear'; S.clearT = 0; S.tally = 0; beep(523, 0.15, 'triangle', 0.2); setTimeout(() => beep(784, 0.25, 'triangle', 0.2), 150); }
     return;
   }
+  if (S.state === 'over') { S.overT += dt; return; }
   if (S.state === 'clear') { S.clearT += dt; S.tally = Math.min(S.levelCoins + bonus(), S.tally + dt * 30); return; }
   if (S.state !== 'play') return;
 
@@ -303,10 +327,11 @@ function update(dt) {
       const nx = dx / d, ny = dy / d;
       e.vx -= nx * 260; e.vy -= ny * 260; e.x -= nx * 6; e.y -= ny * 6;
       if (S.iframes <= 0) {
-        S.hp = Math.max(0, S.hp - 3); S.iframes = 1.5; S.stats.hits++; S.shake = 10;
+        S.hits++; S.iframes = CAR_IFRAMES; S.stats.hits++; S.shake = 10;
         p.vx += nx * 220; p.vy += ny * 220;
         beep(200, 0.25, 'sawtooth', 0.15, -120);
-        if (S.hp <= 0) { S.msg = 'Oops! Try again!'; S.msgT = 2; startLevel(); return; }
+        if (S.hits >= MAX_HITS) { gameOver('cars'); return; }
+        S.msg = S.hits === MAX_HITS - 1 ? 'Careful! One more hit!' : 'Ouch! Hit ' + S.hits + '/' + MAX_HITS; S.msgT = 1.5;
       }
     }
   }
@@ -332,6 +357,7 @@ function levelDone() {
   for (let i = 0; i < 40; i++) { const an = -Math.PI / 2 + (Math.random() - 0.5) * 2.2, sp = 150 + Math.random() * 250; S.parts.push({ x: S.player.x, y: S.player.y - 30, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, r: 4, life: 1.5, max: 1.5, confetti: ['#ff4f7b','#ffd23f','#3ee0ff','#7cff6b','#b06bff'][i % 5] }); }
 }
 function tap() {
+  if (S.state === 'over' && S.overT > 0.7) { S.coins = save.coins; S.msgT = 0; startLevel(); beep(660, 0.08, 'square', 0.1); return; }
   if (S.state === 'clear' && S.clearT > 0.6) { S.level++; S.coins = save.coins; startLevel(); beep(880, 0.08, 'square', 0.1); }
 }
 
@@ -448,6 +474,11 @@ function drawHUD() {
   pill(12, top + 28, HP_MAX * (segW + gap) + 8, 16, 0.35);
   for (let i = 0; i < HP_MAX; i++) { ctx.fillStyle = i < S.hp ? (S.hp <= 6 ? '#ff6b6b' : '#ffffff') : 'rgba(255,255,255,.18)'; ctx.fillRect(17 + i * (segW + gap), top + 31, segW, 10); }
   // coins
+  // car-hit pips: 3 hearts, one breaks per car hit
+  for (let i = 0; i < MAX_HITS; i++) { const hx = 22 + i * 26, hy = top + 64, lost = i >= MAX_HITS - S.hits;
+    heart(hx, hy, 13, 'rgba(90,40,10,.45)'); heart(hx, hy, 10, lost ? 'rgba(255,255,255,.25)' : '#ff4f7b');
+    if (lost) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(hx - 5, hy - 6); ctx.lineTo(hx + 5, hy + 2); ctx.stroke(); } }
+  txt('Hits ' + S.hits + '/' + MAX_HITS, 12, top + 86, 14, S.hits >= MAX_HITS - 1 ? '#ffd23f' : '#fff', 'left');
   const ct = String(S.coins); ctx.font = '900 24px "Trebuchet MS",system-ui'; const tw = ctx.measureText(ct).width;
   drawCoin(w - 30 - tw - 22, top + 16, 15, 0); txt(ct, w - 18, top + 17, 24, '#fff', 'right');
   // level + objective
@@ -459,7 +490,7 @@ function drawHUD() {
       const x = side < 0 ? 22 : w - 22, big = lv === 2 ? 38 : 30;
       txt(side < 0 ? '◀' : '▶', x, hh * 0.6, big); ctx.globalAlpha = 1; } }
   if (S.msgT > 0) txt(S.msg, w / 2, top + 150, 26, '#ffd23f');
-  if (S.state === 'play' && S.t < 4 && S.level === save.best && S.kills === 0) { ctx.globalAlpha = Math.max(0, Math.min(1, 4 - S.t)); txt('Tap to nudge, hold LEFT / RIGHT to spin!', w / 2, H / sc - 110, Math.min(22, w / 19)); txt('Make the trucks crash!', w / 2, H / sc - 78, 20, '#ffd23f'); ctx.globalAlpha = 1; }
+  if (S.state === 'play' && S.t < 4 && S.level === save.best && S.kills === 0) { ctx.globalAlpha = Math.max(0, Math.min(1, 4 - S.t)); txt('Tap to nudge, hold LEFT / RIGHT to spin!', w / 2, H / sc - 110, Math.min(22, w / 19)); txt('Make the trucks crash! 3 hits = out!', w / 2, H / sc - 78, Math.min(20, w / 20), '#ffd23f'); ctx.globalAlpha = 1; }
   ctx.restore();
 }
 function star(x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); for (let i = 0; i < 10; i++) { const an = -Math.PI / 2 + i * Math.PI / 5, rr2 = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(an) * rr2, y + Math.sin(an) * rr2); } ctx.fill(); }
@@ -483,11 +514,26 @@ function drawClear() {
   if (t > 0.6) { const pulse = 1 + Math.sin(t * 5) * 0.05; ctx.save(); ctx.translate(0, 130); ctx.scale(pulse, pulse); ctx.fillStyle = '#22c55e'; rr(ctx, -130, -32, 260, 64, 32); ctx.fill(); txt('Tap to Continue', 0, 0, 26); ctx.restore(); }
   ctx.restore();
 }
+function drawOver() {
+  const t = S.overT, cx = W / 2, cy = H * 0.42;
+  ctx.fillStyle = 'rgba(40,20,60,.6)'; ctx.fillRect(0, 0, W, H);
+  const s = Math.min(1, W / 400, H / 640) * Math.min(1, 0.4 + t * 3);
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(s, s);
+  ctx.fillStyle = 'rgba(255,255,255,.12)'; rr(ctx, -170, -200, 340, 380, 30); ctx.fill();
+  ctx.font = '64px system-ui,"Apple Color Emoji",sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('💫', 0, -140);
+  txt(S.overWhy === 'cars' ? 'Crashed 3 times!' : 'Too many bumps!', 0, -75, 34, '#ffd23f');
+  txt('Good try! You reached', 0, -30, 18);
+  txt('Level ' + S.level, 0, 4, 30);
+  drawCoin(-135, 50, 18, 0); txt('+' + S.levelCoins + ' coins this run', 15, 51, 22, '#fff', 'center');
+  if (t > 0.7) { const pulse = 1 + Math.sin(t * 5) * 0.05; ctx.save(); ctx.translate(0, 125); ctx.scale(pulse, pulse); ctx.fillStyle = '#22c55e'; rr(ctx, -120, -32, 240, 64, 32); ctx.fill(); txt('Tap to Retry', 0, 0, 26); ctx.restore(); }
+  ctx.restore();
+}
 function render() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   drawWorld();
-  if (S.state !== 'clear') drawHUD();
+  if (S.state !== 'clear' && S.state !== 'over') drawHUD();
   if (S.state === 'clear') drawClear();
+  if (S.state === 'over') drawOver();
   if (S.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${Math.min(1, S.flash)})`; ctx.fillRect(0, 0, W, H); }
 }
 
@@ -501,5 +547,5 @@ startLevel();
 requestAnimationFrame(frame);
 
 // test / debug hook
-window.DD = { zones, TUNE: { HOLD_MS, TAP_STEER, HOLD_STEER, NUDGE_STEER, NUDGE_S }, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
+window.DD = { COMBAT: { MAX_HITS, CAR_IFRAMES, BUMP_DMG, BUMP_CD, BUMP_GLOBAL_CD }, zones, TUNE: { HOLD_MS, TAP_STEER, HOLD_STEER, NUDGE_STEER, NUDGE_S }, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
 })();

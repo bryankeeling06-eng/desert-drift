@@ -12,8 +12,9 @@ A cartoony top-down drift game for kids. Your little cyan car never stops drivin
 ## Rules
 - No weapons — trick the trucks into crashing together.
 - Grab gold coins they drop.
-- Getting bumped costs some health (you blink for a moment and are safe).
-- Run out of health? No worries — the level just restarts.
+- **3 truck hits = out.** The three pink hearts under the health bar show your hits ("Hits 1/3"). After a hit you blink for 1.5 s and can't be hit again.
+- **Bumping crates, barriers, tire stacks or the arena edge** chips 1 of the 20 health segments (at most once a second per object), and it never counts as a truck hit. An empty bar also ends the run.
+- Game over shows the level you reached and the coins you got; **Tap to Retry** restarts that level and you keep all your coins.
 
 Coins and best level save in your browser (`localStorage` key `desertDrift.v1`).
 
