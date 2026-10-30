@@ -14,8 +14,8 @@ let W = 0, H = 0, DPR = 1, ZOOM = 1;
 
 // ---------- save ----------
 function loadSave() {
-  try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s && typeof s === 'object') return { coins: s.coins|0, best: Math.max(1, s.best|0), level: Math.max(1, s.level|0), muted: !!s.muted }; } catch (e) {}
-  return { coins: 0, best: 1, level: 1, muted: false };
+  try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s && typeof s === 'object') return { coins: s.coins|0, best: Math.max(1, s.best|0), level: Math.max(1, s.level|0), muted: !!s.muted, map: typeof s.map === 'string' ? s.map : 'desert' }; } catch (e) {}
+  return { coins: 0, best: 1, level: 1, muted: false, map: 'desert' };
 }
 const save = loadSave();
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
@@ -82,6 +82,7 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => { const k = e.key.toLowerCase(); keys[k] = false; if (KEYSIDE[k]) release('key:' + k); });
 cv.addEventListener('pointerdown', e => {
   unlockAudio(); e.preventDefault();
+  if (S.state === 'maps') { mapsClick(e.clientX, e.clientY); return; }
   if (S.state !== 'play') { tap(); return; }          // taps on menus only advance, never steer
   if (e.clientY < hudBottom()) return;                // HUD strip is not a steering zone
   press('p' + e.pointerId, e.clientX < W / 2 ? -1 : 1);
@@ -138,27 +139,268 @@ function makeCar(x, y, a, enemy) {
 }
 function goalFor(l) { return Math.min(30, 10 + (l - 1) * 2); }
 
+// ---------- MAPS (themes) ----------
+// One global level counter; the player picks any unlocked map. Maps unlock by best level reached.
+const MAPS = [
+  { id: 'desert', name: 'Desert', unlock: 1, ground: '#d98a4b', outer: '#b8682e', edge: '#8f4f22', track: '110,55,20', player: 'cyan', speed: 1,
+    enemies: [{ body: 'truck', c1: '#1e5aa8', c2: '#2f7fd6' }],
+    obs: [['tires', 0.45], ['crate', 0.3], ['barrier', 0.25]] },
+  { id: 'city', name: 'City', unlock: 3, ground: '#5d636b', outer: '#3d4249', edge: '#c9ccd1', track: '15,15,22', player: 'cop', speed: 1.03,
+    enemies: [{ body: 'sedan', c1: '#e04b3a' }, { body: 'taxi', c1: '#ffcc00' }, { body: 'bus', c1: '#ff9d1c' }, { body: 'sedan', c1: '#4f7bd6' }],
+    obs: [['cone', 0.4], ['roadblock', 0.3], ['parked', 0.3]] },
+  { id: 'park', name: 'Park', unlock: 5, ground: '#7cc35a', outer: '#4f9a3a', edge: '#2f6e25', track: '45,85,25', player: 'icecream', speed: 0.97,
+    enemies: [{ body: 'sedan', c1: '#2bb3a3' }, { body: 'sedan', c1: '#e86f9a' }, { body: 'sedan', c1: '#7a6be0' }],
+    obs: [['tree', 0.4], ['bench', 0.2], ['picnic', 0.25], ['fountain', 0.15]] },
+  { id: 'unicorn', name: 'Unicorn Fields', unlock: 7, ground: '#8fe06a', outer: '#c9b6ff', edge: '#ffffff', track: '60,125,45', player: 'unicorn', speed: 0.95,
+    enemies: [{ body: 'bubble', c1: '#ff9ecb' }, { body: 'bubble', c1: '#8fd3ff' }, { body: 'bubble', c1: '#c7a6ff' }, { body: 'bubble', c1: '#ffd36b' }],
+    obs: [['hay', 0.4], ['fence', 0.3], ['mushroom', 0.3]] },
+  { id: 'playground', name: 'Playground', unlock: 9, ground: '#cf6f57', outer: '#5d9bd6', edge: '#ffd23f', track: '90,30,20', player: 'kart', speed: 0.95,
+    enemies: [{ body: 'bumper', c1: '#ff5d5d' }, { body: 'bumper', c1: '#4fb3ff' }, { body: 'bumper', c1: '#7ddc5a' }, { body: 'bumper', c1: '#ffb03b' }],
+    obs: [['slide', 0.3], ['swings', 0.25], ['climber', 0.25], ['spring', 0.2]] },
+  { id: 'beach', name: 'Beach', unlock: 11, ground: '#f2d49b', outer: '#3fb8e0', edge: '#ffffff', track: '165,125,75', player: 'buggy', speed: 1,
+    enemies: [{ body: 'buggy', c1: '#ff8c42' }, { body: 'buggy', c1: '#3ec1d3' }, { body: 'buggy', c1: '#a06cd5' }],
+    obs: [['castle', 0.35], ['umbrella', 0.35], ['rock', 0.3]] },
+];
+const OBS = { // shape + size for each obstacle kind
+  tires: () => ({ shape: 'c', r: 30 }), crate: () => ({ shape: 'r', w: 56, h: 56 }),
+  barrier: () => rnd() < 0.5 ? { shape: 'r', w: 130, h: 34 } : { shape: 'r', w: 34, h: 130 },
+  cone: () => ({ shape: 'c', r: 13 }), roadblock: () => rnd() < 0.5 ? { shape: 'r', w: 100, h: 22 } : { shape: 'r', w: 22, h: 100 },
+  parked: () => rnd() < 0.5 ? { shape: 'r', w: 56, h: 28, col: ['#9b59b6', '#27ae60', '#e67e22', '#ecf0f1'][Math.floor(rnd() * 4)] } : { shape: 'r', w: 28, h: 56, col: ['#9b59b6', '#27ae60', '#e67e22', '#ecf0f1'][Math.floor(rnd() * 4)] },
+  building: () => ({ shape: 'r', w: 170 + Math.floor(rnd() * 60), h: 170 + Math.floor(rnd() * 60), col: ['#e8b86b', '#d9776b', '#8fb3d9', '#b6a6d9', '#e0d6c8'][Math.floor(rnd() * 5)] }),
+  tree: () => ({ shape: 'c', r: 32 }), bench: () => rnd() < 0.5 ? { shape: 'r', w: 66, h: 20 } : { shape: 'r', w: 20, h: 66 },
+  picnic: () => ({ shape: 'r', w: 64, h: 48 }), fountain: () => ({ shape: 'c', r: 48 }), pond: () => ({ shape: 'c', r: 110 + Math.floor(rnd() * 40) }),
+  hay: () => ({ shape: 'c', r: 26 }), fence: () => rnd() < 0.5 ? { shape: 'r', w: 150, h: 14 } : { shape: 'r', w: 14, h: 150 }, mushroom: () => ({ shape: 'c', r: 20 }),
+  slide: () => rnd() < 0.5 ? { shape: 'r', w: 40, h: 110 } : { shape: 'r', w: 110, h: 40 }, swings: () => ({ shape: 'r', w: 140, h: 26 }),
+  climber: () => ({ shape: 'r', w: 90, h: 90 }), spring: () => ({ shape: 'c', r: 18 }),
+  castle: () => ({ shape: 'c', r: 26 }), umbrella: () => ({ shape: 'c', r: 34 }), rock: () => ({ shape: 'c', r: 28 }), pool: () => ({ shape: 'c', r: 90 + Math.floor(rnd() * 30) }),
+};
+let MAP = MAPS[0];
+function mapById(id) { return MAPS.find(m => m.id === id) || MAPS[0]; }
+function isUnlocked(m) { return save.best >= m.unlock; }
+function unlockedMaps() { return MAPS.filter(isUnlocked).map(m => m.id); }
+
 function buildLevel() {
-  rngSeed = 1234 + S.level * 977;
-  S.obstacles = []; S.plateaus = []; S.craters = [];
-  const c = WORLD / 2, clear = 260;
-  const far = (x, y) => Math.hypot(x - c, y - c) > clear;
-  for (let i = 0; i < 7; i++) { // plateaus (decor)
-    const x = 150 + rnd() * (WORLD - 300), y = 150 + rnd() * (WORLD - 300), pts = [], n = 7, r = 120 + rnd() * 140;
-    for (let k = 0; k < n; k++) { const an = k / n * Math.PI * 2, rr = r * (0.7 + rnd() * 0.5); pts.push([x + Math.cos(an) * rr, y + Math.sin(an) * rr]); }
-    S.plateaus.push(pts);
+  MAP = mapById(save.map); if (!isUnlocked(MAP)) { MAP = MAPS[0]; save.map = 'desert'; }
+  rngSeed = 1234 + S.level * 977 + MAPS.indexOf(MAP) * 31;
+  S.obstacles = []; S.decor = [];
+  const c = WORLD / 2, clear = 280;
+  const free = (x, y, pad) => Math.hypot(x - c, y - c) > clear + pad && S.obstacles.every(o => Math.hypot(o.x - x, o.y - y) > (o.r || Math.max(o.w, o.h) / 2) + pad + 20);
+  const add = (kind, x, y) => { const o = Object.assign({ kind, x, y }, OBS[kind]()); const pad = o.r || Math.max(o.w, o.h) / 2; if (free(x, y, pad)) S.obstacles.push(o); };
+  const R = () => 120 + rnd() * (WORLD - 240);
+  const D = (k, extra) => S.decor.push(Object.assign({ k, x: rnd() * WORLD, y: rnd() * WORLD }, extra || {}));
+  // theme-specific big features + decor
+  if (MAP.id === 'desert') {
+    for (let i = 0; i < 7; i++) { const x = 150 + rnd() * (WORLD - 300), y = 150 + rnd() * (WORLD - 300), pts = [], r = 120 + rnd() * 140; for (let k = 0; k < 7; k++) { const an = k / 7 * Math.PI * 2, q = r * (0.7 + rnd() * 0.5); pts.push([x + Math.cos(an) * q, y + Math.sin(an) * q]); } S.decor.push({ k: 'plateau', x, y, rad: r * 1.3, pts }); }
+    for (let i = 0; i < 14; i++) D('crater', { r: 25 + rnd() * 45 });
+  } else if (MAP.id === 'city') {
+    for (let gx = 0; gx < 6; gx++) for (let gy = 0; gy < 6; gy++) {
+      const x = 200 + gx * 400, y = 200 + gy * 400;
+      if (Math.hypot(x - c, y - c) < 420) { S.decor.push({ k: 'sidewalk', x, y, rad: 200 }); continue; }
+      if (rnd() < 0.2) { S.decor.push({ k: 'plaza', x, y, rad: 200 }); continue; }
+      S.decor.push({ k: 'sidewalk', x, y, rad: 200 });
+      const o = Object.assign({ kind: 'building', x, y }, OBS.building()); S.obstacles.push(o);
+    }
+    for (let i = 0; i < 30; i++) S.decor.push({ k: rnd() < 0.5 ? 'manhole' : 'hydrant', x: 400 * (1 + Math.floor(rnd() * 5)) + (rnd() - 0.5) * 60, y: rnd() * WORLD, rad: 20 });
+  } else if (MAP.id === 'park') {
+    for (let i = 0; i < 9; i++) S.decor.push({ k: 'path', x: R(), y: R(), a: rnd() * Math.PI, len: 500 + rnd() * 500, rad: 600 });
+    for (let i = 0; i < 2; i++) add('pond', R(), R());
+    for (let i = 0; i < 140; i++) D('flowers', { rad: 20, c: ['#ff6fa5', '#fff36b', '#ffffff', '#b07cff'][i % 4] });
+  } else if (MAP.id === 'unicorn') {
+    for (let i = 0; i < 10; i++) D('hill', { r: 140 + rnd() * 140, rad: 300 });
+    for (let i = 0; i < 4; i++) D('rainbow', { r: 120 + rnd() * 60, rad: 200 });
+    for (let i = 0; i < 160; i++) D('flowers', { rad: 20, c: ['#ff6fa5', '#fff36b', '#ffffff', '#b07cff', '#6fd3ff'][i % 5] });
+    for (let i = 0; i < 8; i++) D('cloud', { r: 50 + rnd() * 40, rad: 150 });
+  } else if (MAP.id === 'playground') {
+    for (let i = 0; i < 6; i++) D('sandbox', { r: 90 + rnd() * 40, rad: 140 });
+    for (let i = 0; i < 4; i++) D('merry', { r: 60, rad: 70 });
+    for (let i = 0; i < 8; i++) D('hopscotch', { rad: 120, a: rnd() * Math.PI });
+    for (let i = 0; i < 6; i++) D('ring', { r: 80 + rnd() * 60, rad: 150, c: ['#ffffff', '#ffd23f', '#5d9bd6'][i % 3] });
+  } else if (MAP.id === 'beach') {
+    for (let i = 0; i < 3; i++) add('pool', R(), R());
+    for (let i = 0; i < 30; i++) D('towel', { rad: 50, a: rnd() * Math.PI, c: ['#ff6f91', '#4fc3f7', '#ffd23f', '#7ddc5a'][i % 4] });
+    for (let i = 0; i < 90; i++) D(rnd() < 0.5 ? 'shell' : 'star', { rad: 12 });
   }
-  for (let i = 0; i < 14; i++) S.craters.push({ x: rnd() * WORLD, y: rnd() * WORLD, r: 25 + rnd() * 45 });
-  const nObs = 10 + Math.min(10, S.level);
-  for (let i = 0; i < nObs; i++) {
-    const x = 120 + rnd() * (WORLD - 240), y = 120 + rnd() * (WORLD - 240);
-    if (!far(x, y)) continue;
-    const kind = rnd();
-    if (kind < 0.45) S.obstacles.push({ type: 'tires', x, y, r: 30 });
-    else if (kind < 0.75) S.obstacles.push({ type: 'crate', x, y, w: 56, h: 56 });
-    else { const hor = rnd() < 0.5; S.obstacles.push({ type: 'barrier', x, y, w: hor ? 130 : 34, h: hor ? 34 : 130 }); }
+  const nObs = (MAP.id === 'city' ? 16 : MAP.id === 'desert' ? 16 : 34) + Math.min(10, S.level);
+  const tot = MAP.obs.reduce((s, o) => s + o[1], 0);
+  for (let i = 0; i < nObs * 2 && S.obstacles.filter(o => o.kind !== 'building' && o.kind !== 'pond' && o.kind !== 'pool').length < nObs; i++) {
+    let r = rnd() * tot, kind = MAP.obs[0][0]; for (const [k, w] of MAP.obs) { if ((r -= w) < 0) { kind = k; break; } }
+    let x = R(), y = R();
+    if (MAP.id === 'city' && kind !== 'parked') { if (rnd() < 0.5) x = 400 * (1 + Math.floor(rnd() * 5)) + (rnd() - 0.5) * 120; else y = 400 * (1 + Math.floor(rnd() * 5)) + (rnd() - 0.5) * 120; }
+    add(kind, x, y);
+  }
+  S.mapId = MAP.id;
+}
+
+// ---------- vehicle skins ----------
+function wheels(list, w, h, col = '#1b1f2a') { ctx.fillStyle = col; for (const [x, y] of list) { rr(ctx, x, y, w, h, Math.min(w, h) / 2.5); ctx.fill(); } }
+function drawPlayerSkin(kind) {
+  const t = S.t;
+  if (kind === 'cop') {
+    wheels([[-11, -10], [5, -10], [-11, 7], [5, 7]], 8, 3);
+    ctx.fillStyle = '#16181d'; rr(ctx, -15, -8, 30, 16, 4); ctx.fill();
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(-7, -8, 13, 16);
+    ctx.fillStyle = '#bfe9ff'; rr(ctx, 6, -6, 4, 12, 1); ctx.fill();
+    const on = Math.floor(t * 6) % 2;
+    ctx.fillStyle = on ? '#ff3b3b' : '#7a1d1d'; ctx.fillRect(-3, -7, 4, 7);
+    ctx.fillStyle = on ? '#1f4fa8' : '#3b8bff'; ctx.fillRect(-3, 0, 4, 7);
+    ctx.fillStyle = '#fff6a0'; ctx.fillRect(13, -7, 2, 4); ctx.fillRect(13, 3, 2, 4);
+  } else if (kind === 'icecream') {
+    wheels([[-12, -11], [6, -11], [-12, 8], [6, 8]], 8, 3);
+    ctx.fillStyle = '#ffffff'; rr(ctx, -16, -9, 32, 18, 4); ctx.fill();
+    ctx.fillStyle = '#ff8fc0'; ctx.fillRect(-16, -9, 32, 3); ctx.fillRect(-16, 6, 32, 3);
+    ctx.fillStyle = '#9fe3ff'; rr(ctx, 9, -7, 4, 14, 1); ctx.fill();
+    ctx.fillStyle = '#e0a060'; ctx.beginPath(); ctx.moveTo(-1, 0); ctx.lineTo(-9, -4); ctx.lineTo(-9, 4); ctx.fill();
+    ctx.fillStyle = '#ff8fc0'; ctx.beginPath(); ctx.arc(-1, 0, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(1, -1, 2, 0, 7); ctx.fill();
+  } else if (kind === 'unicorn') {
+    wheels([[-11, -10], [5, -10], [-11, 7], [5, 7]], 8, 3, '#b07cff');
+    ctx.fillStyle = '#fbf6ff'; rr(ctx, -15, -8, 30, 16, 7); ctx.fill();
+    const mane = ['#ff6fa5', '#ffb03b', '#fff36b', '#6fdc8c', '#6fc3ff', '#b07cff'];
+    mane.forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(-14 + i * 3.5, -2.5, 3.5, 5); });
+    ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.moveTo(14, -3); ctx.lineTo(24, 0); ctx.lineTo(14, 3); ctx.fill();
+    ctx.fillStyle = '#ffb7d5'; ctx.beginPath(); ctx.arc(9, -6, 2.5, 0, 7); ctx.arc(9, 6, 2.5, 0, 7); ctx.fill();
+  } else if (kind === 'kart') {
+    wheels([[-13, -12], [5, -12], [-13, 7], [5, 7]], 9, 5);
+    ctx.fillStyle = '#ff7a1a'; rr(ctx, -13, -7, 27, 14, 5); ctx.fill();
+    ctx.fillStyle = '#2a8cff'; rr(ctx, -9, -5, 9, 10, 3); ctx.fill();
+    ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(-4, 0, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(12, -6, 3, 12);
+  } else if (kind === 'buggy') {
+    wheels([[-13, -12], [5, -12], [-13, 7], [5, 7]], 9, 5);
+    ctx.fillStyle = '#e8312b'; rr(ctx, -14, -7, 28, 14, 4); ctx.fill();
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.strokeRect(-7, -6, 10, 12);
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(6, -1.5, 6, 3); ctx.fillRect(7.5, -3, 3, 6);
+  } else {
+    wheels([[-11, -10], [5, -10], [-11, 7], [5, 7]], 8, 3);
+    ctx.fillStyle = '#22d3ee'; rr(ctx, -14, -8, 28, 16, 4); ctx.fill();
+    ctx.fillStyle = '#e0fbff'; rr(ctx, -4, -6, 9, 12, 2); ctx.fill();
+    ctx.fillStyle = '#0e9fbf'; ctx.fillRect(-12, -6, 5, 12);
+    ctx.fillStyle = '#fff6a0'; ctx.fillRect(12, -7, 2, 4); ctx.fillRect(12, 3, 2, 4);
   }
 }
+function shade(hex, f) { const n = parseInt(hex.slice(1), 16); const ch = s => Math.max(0, Math.min(255, Math.round(((n >> s) & 255) * f))); return `rgb(${ch(16)},${ch(8)},${ch(0)})`; }
+function drawEnemySkin(sk) {
+  const c1 = sk.c1;
+  if (sk.body === 'truck') {
+    wheels([[-14, -20], [10, -20], [-14, 13], [10, 13]], 14, 8);
+    ctx.fillStyle = c1; rr(ctx, -22, -13, 44, 26, 6); ctx.fill();
+    ctx.fillStyle = sk.c2 || shade(c1, 1.25); rr(ctx, -12, -10, 22, 20, 4); ctx.fill();
+    ctx.fillStyle = '#9fe3ff'; rr(ctx, 4, -9, 6, 18, 2); ctx.fill();
+    ctx.fillStyle = '#ffe28a'; ctx.fillRect(19, -11, 3, 5); ctx.fillRect(19, 6, 3, 5);
+  } else if (sk.body === 'bus') {
+    wheels([[-20, -15], [12, -15], [-20, 11], [12, 11]], 10, 4);
+    ctx.fillStyle = c1; rr(ctx, -28, -13, 56, 26, 5); ctx.fill();
+    ctx.fillStyle = '#bfe9ff'; for (let i = 0; i < 5; i++) { ctx.fillRect(-22 + i * 9, -11, 6, 4); ctx.fillRect(-22 + i * 9, 7, 6, 4); }
+    ctx.fillRect(22, -10, 4, 20);
+    ctx.fillStyle = shade(c1, 0.85); ctx.fillRect(-24, -4, 44, 8);
+  } else if (sk.body === 'bubble') {
+    wheels([[-14, -16], [8, -16], [-14, 12], [8, 12]], 10, 5, '#ffffff');
+    ctx.fillStyle = c1; ctx.beginPath(); ctx.ellipse(0, 0, 23, 14, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.beginPath(); ctx.ellipse(-2, 0, 10, 9, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(14, -6, 2.5, 0, 7); ctx.arc(14, 6, 2.5, 0, 7); ctx.fill();
+    ctx.fillStyle = shade(c1, 0.8); ctx.beginPath(); ctx.arc(-16, 0, 3, 0, 7); ctx.fill();
+  } else if (sk.body === 'bumper') {
+    ctx.fillStyle = '#2a2a2e'; ctx.beginPath(); ctx.arc(0, 0, 23, 0, 7); ctx.fill();
+    ctx.fillStyle = c1; ctx.beginPath(); ctx.arc(0, 0, 19, 0, 7); ctx.fill();
+    ctx.fillStyle = shade(c1, 0.75); rr(ctx, -10, -9, 14, 18, 5); ctx.fill();
+    ctx.fillStyle = '#ffd9b3'; ctx.beginPath(); ctx.arc(-3, 0, 5, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(-24, 0); ctx.stroke();
+  } else if (sk.body === 'buggy') {
+    wheels([[-16, -19], [8, -19], [-16, 12], [8, 12]], 14, 7);
+    ctx.fillStyle = c1; rr(ctx, -20, -11, 40, 22, 6); ctx.fill();
+    ctx.strokeStyle = shade(c1, 0.6); ctx.lineWidth = 3; ctx.strokeRect(-10, -9, 16, 18);
+    ctx.fillStyle = '#9fe3ff'; rr(ctx, 8, -8, 4, 16, 1); ctx.fill();
+  } else { // sedan / taxi
+    wheels([[-15, -15], [9, -15], [-15, 11], [9, 11]], 10, 4);
+    ctx.fillStyle = c1; rr(ctx, -22, -12, 44, 24, 8); ctx.fill();
+    ctx.fillStyle = shade(c1, 0.8); rr(ctx, -9, -10, 18, 20, 4); ctx.fill();
+    ctx.fillStyle = '#bfe9ff'; rr(ctx, 9, -9, 6, 18, 2); ctx.fill(); rr(ctx, -15, -8, 4, 16, 2); ctx.fill();
+    if (sk.body === 'taxi') { ctx.fillStyle = '#222'; for (let i = 0; i < 6; i++) ctx.fillRect(-21 + i * 7, i % 2 ? -12 : 9, 4, 3); ctx.fillStyle = '#fff'; rr(ctx, -4, -4, 7, 8, 2); ctx.fill(); }
+    ctx.fillStyle = '#ffe28a'; ctx.fillRect(19, -10, 3, 5); ctx.fillRect(19, 5, 3, 5);
+  }
+}
+function drawCar(c, blink) {
+  if (blink) return;
+  ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.a);
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; rr(ctx, -c.r + 3, -c.r * 0.8 + 4, c.r * 2, c.r * 1.6, 6); ctx.fill();
+  if (c.enemy) drawEnemySkin(c.skin || MAP.enemies[0]); else drawPlayerSkin(MAP.player);
+  ctx.restore();
+}
+
+// ---------- obstacles & decor ----------
+function shadowRect(o) { ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(o.x - o.w / 2 + 5, o.y - o.h / 2 + 6, o.w, o.h); }
+function circ(x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+function drawObstacle(o) {
+  const L = o.x - (o.w || 0) / 2, T = o.y - (o.h || 0) / 2;
+  switch (o.kind) {
+    case 'tires': for (const [dx, dy] of [[-12, -10], [12, -10], [0, 10]]) { circ(o.x + dx, o.y + dy, 13, '#2a2a2e'); circ(o.x + dx, o.y + dy, 5, '#7a5a40'); } break;
+    case 'crate': shadowRect(o); ctx.fillStyle = '#b5773e'; ctx.fillRect(L, T, o.w, o.h); ctx.strokeStyle = '#7d4d22'; ctx.lineWidth = 4; ctx.strokeRect(L + 2, T + 2, o.w - 4, o.h - 4); ctx.beginPath(); ctx.moveTo(L + 4, T + 4); ctx.lineTo(L + o.w - 4, T + o.h - 4); ctx.stroke(); break;
+    case 'barrier': case 'roadblock': {
+      shadowRect(o); ctx.fillStyle = o.kind === 'barrier' ? '#c9c4bb' : '#ffffff'; ctx.fillRect(L, T, o.w, o.h);
+      ctx.fillStyle = o.kind === 'barrier' ? '#e04b3a' : '#ff7a1a'; const hor = o.w > o.h, n = Math.floor(Math.max(o.w, o.h) / 42);
+      for (let i = 0; i < n; i++) hor ? ctx.fillRect(L + 12 + i * 42, T + 4, 18, o.h - 8) : ctx.fillRect(L + 4, T + 12 + i * 42, o.w - 8, 18);
+      break; }
+    case 'cone': circ(o.x + 2, o.y + 3, o.r, 'rgba(0,0,0,.18)'); ctx.fillStyle = '#ff7a1a'; ctx.fillRect(o.x - o.r, o.y - o.r, o.r * 2, o.r * 2); circ(o.x, o.y, o.r * 0.7, '#ff9d4d'); circ(o.x, o.y, o.r * 0.45, '#ffffff'); circ(o.x, o.y, o.r * 0.25, '#ff7a1a'); break;
+    case 'parked': shadowRect(o); ctx.fillStyle = o.col; rr(ctx, L, T, o.w, o.h, 7); ctx.fill(); ctx.fillStyle = 'rgba(0,0,0,.18)'; o.w > o.h ? rr(ctx, o.x - 9, T + 3, 18, o.h - 6, 3) : rr(ctx, L + 3, o.y - 9, o.w - 6, 18, 3); ctx.fill(); break;
+    case 'building': {
+      ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(L + 10, T + 12, o.w, o.h);
+      ctx.fillStyle = o.col; ctx.fillRect(L, T, o.w, o.h); ctx.fillStyle = shade(o.col, 0.85); ctx.fillRect(L + 12, T + 12, o.w - 24, o.h - 24);
+      ctx.fillStyle = shade(o.col, 0.7); ctx.fillRect(L + o.w * 0.2, T + o.h * 0.2, 26, 20); ctx.fillRect(L + o.w * 0.6, T + o.h * 0.55, 30, 30);
+      ctx.fillStyle = '#7fd0ff'; ctx.beginPath(); ctx.arc(L + o.w * 0.7, T + o.h * 0.3, 10, 0, 7); ctx.fill(); break; }
+    case 'tree': circ(o.x + 5, o.y + 7, o.r, 'rgba(0,0,0,.2)'); circ(o.x, o.y, o.r, '#2f8f3a'); circ(o.x - 8, o.y - 8, o.r * 0.6, '#47b04f'); circ(o.x + 9, o.y + 4, o.r * 0.4, '#3da046'); break;
+    case 'bench': shadowRect(o); ctx.fillStyle = '#9a6233'; ctx.fillRect(L, T, o.w, o.h); ctx.fillStyle = '#c4874b'; o.w > o.h ? (ctx.fillRect(L, T + 3, o.w, 4), ctx.fillRect(L, T + 11, o.w, 4)) : (ctx.fillRect(L + 3, T, 4, o.h), ctx.fillRect(L + 11, T, 4, o.h)); break;
+    case 'picnic': shadowRect(o); ctx.fillStyle = '#c4874b'; ctx.fillRect(L, T, o.w, 10); ctx.fillRect(L, T + o.h - 10, o.w, 10); ctx.fillStyle = '#e04b3a'; ctx.fillRect(L + 4, T + 14, o.w - 8, o.h - 28); ctx.fillStyle = '#ffffff'; for (let i = 0; i < 4; i++) ctx.fillRect(L + 4 + i * 15, T + 14, 7, o.h - 28); break;
+    case 'fountain': circ(o.x, o.y, o.r, '#b8b8c0'); circ(o.x, o.y, o.r - 8, '#5cc8ff'); circ(o.x, o.y, 12, '#d9d9e0'); circ(o.x, o.y, 5 + Math.sin(S.t * 6) * 2, '#ffffff'); break;
+    case 'pond': case 'pool': circ(o.x, o.y, o.r + 6, o.kind === 'pond' ? '#5a9e3f' : '#e8c27f'); circ(o.x, o.y, o.r, o.kind === 'pond' ? '#4aa8e0' : '#3fb8e0'); circ(o.x - o.r * 0.3, o.y - o.r * 0.3, o.r * 0.25, 'rgba(255,255,255,.35)');
+      if (o.kind === 'pond') { circ(o.x + o.r * 0.3, o.y + o.r * 0.2, 12, '#3da046'); circ(o.x + o.r * 0.1, o.y + o.r * 0.45, 9, '#3da046'); } break;
+    case 'hay': circ(o.x + 3, o.y + 4, o.r, 'rgba(0,0,0,.18)'); circ(o.x, o.y, o.r, '#e8c04a'); ctx.strokeStyle = '#c99a2a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(o.x, o.y, o.r * 0.6, 0, 7); ctx.stroke(); ctx.beginPath(); ctx.arc(o.x, o.y, o.r * 0.25, 0, 7); ctx.stroke(); break;
+    case 'fence': ctx.fillStyle = '#ffffff'; ctx.fillRect(L, T + (o.w > o.h ? 4 : 0), o.w > o.h ? o.w : 0, 0);
+      { const hor = o.w > o.h, n = 6; ctx.fillStyle = '#ffffff'; hor ? ctx.fillRect(L, o.y - 2, o.w, 4) : ctx.fillRect(o.x - 2, T, 4, o.h);
+        ctx.fillStyle = '#e0c9ff'; for (let i = 0; i <= n; i++) hor ? ctx.fillRect(L + i * (o.w - 10) / n, T, 10, o.h) : ctx.fillRect(L, T + i * (o.h - 10) / n, o.w, 10); }
+      break;
+    case 'mushroom': circ(o.x + 2, o.y + 3, o.r, 'rgba(0,0,0,.18)'); circ(o.x, o.y, o.r, '#ff4f6b'); circ(o.x - 7, o.y - 5, 4, '#fff'); circ(o.x + 6, o.y - 2, 3.5, '#fff'); circ(o.x - 1, o.y + 8, 3, '#fff'); break;
+    case 'slide': shadowRect(o); ctx.fillStyle = '#ffd23f'; rr(ctx, L, T, o.w, o.h, 8); ctx.fill(); ctx.fillStyle = '#ff5d5d'; o.h > o.w ? ctx.fillRect(L + 8, T, o.w - 16, o.h * 0.7) : ctx.fillRect(L, T + 8, o.w * 0.7, o.h - 16); ctx.fillStyle = '#5d9bd6'; o.h > o.w ? ctx.fillRect(L, T + o.h - 24, o.w, 24) : ctx.fillRect(L + o.w - 24, T, 24, o.h); break;
+    case 'swings': ctx.fillStyle = '#5d9bd6'; ctx.fillRect(L, T, 10, o.h); ctx.fillRect(L + o.w - 10, T, 10, o.h); ctx.fillRect(L, o.y - 3, o.w, 6); ctx.fillStyle = '#ff5d5d'; ctx.fillRect(L + 30, o.y - 6, 22, 12); ctx.fillStyle = '#7ddc5a'; ctx.fillRect(L + 88, o.y - 6, 22, 12); break;
+    case 'climber': shadowRect(o); ctx.strokeStyle = '#ff7a1a'; ctx.lineWidth = 6; ctx.strokeRect(L + 3, T + 3, o.w - 6, o.h - 6); ctx.lineWidth = 4; ctx.strokeStyle = '#ffd23f'; for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.moveTo(L + i * o.w / 4, T + 3); ctx.lineTo(L + i * o.w / 4, T + o.h - 3); ctx.moveTo(L + 3, T + i * o.h / 4); ctx.lineTo(L + o.w - 3, T + i * o.h / 4); ctx.stroke(); } break;
+    case 'spring': circ(o.x + 2, o.y + 3, o.r, 'rgba(0,0,0,.18)'); circ(o.x, o.y, o.r, '#7ddc5a'); circ(o.x, o.y, o.r * 0.55, '#ffffff'); circ(o.x + 4, o.y, 3, '#2a2a2e'); break;
+    case 'castle': circ(o.x + 3, o.y + 3, o.r, 'rgba(0,0,0,.15)'); ctx.fillStyle = '#e0b46a'; ctx.fillRect(o.x - o.r, o.y - o.r, o.r * 2, o.r * 2); ctx.fillStyle = '#c99a50'; for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) { ctx.fillRect(o.x + dx * o.r * 0.7 - 6, o.y + dy * o.r * 0.7 - 6, 12, 12); } ctx.fillStyle = '#ff5d5d'; ctx.fillRect(o.x - 1, o.y - 10, 2, 10); ctx.beginPath(); ctx.moveTo(o.x + 1, o.y - 10); ctx.lineTo(o.x + 9, o.y - 7); ctx.lineTo(o.x + 1, o.y - 4); ctx.fill(); break;
+    case 'umbrella': { circ(o.x + 6, o.y + 8, o.r, 'rgba(0,0,0,.15)'); const cols = ['#ff5d5d', '#ffffff']; for (let i = 0; i < 8; i++) { ctx.fillStyle = cols[i % 2]; ctx.beginPath(); ctx.moveTo(o.x, o.y); ctx.arc(o.x, o.y, o.r, i * Math.PI / 4, (i + 1) * Math.PI / 4); ctx.fill(); } circ(o.x, o.y, 4, '#8a5a2b'); break; }
+    case 'rock': circ(o.x + 3, o.y + 4, o.r, 'rgba(0,0,0,.18)'); circ(o.x, o.y, o.r, '#8d8f99'); circ(o.x - 6, o.y - 7, o.r * 0.5, '#a9abb5'); break;
+  }
+}
+function drawDecor(d) {
+  switch (d.k) {
+    case 'plateau': ctx.fillStyle = '#c47538'; ctx.beginPath(); d.pts.forEach(([x, y], i) => i ? ctx.lineTo(x + 6, y + 8) : ctx.moveTo(x + 6, y + 8)); ctx.fill(); ctx.fillStyle = '#e8a868'; ctx.beginPath(); d.pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.fill(); break;
+    case 'crater': ctx.fillStyle = '#c97a3e'; ctx.beginPath(); ctx.ellipse(d.x, d.y, d.r, d.r * 0.8, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#e39a5c'; ctx.beginPath(); ctx.ellipse(d.x + 3, d.y + 3, d.r * 0.75, d.r * 0.6, 0, 0, 7); ctx.fill(); break;
+    case 'sidewalk': ctx.fillStyle = '#b9bcc2'; ctx.fillRect(d.x - 150, d.y - 150, 300, 300); ctx.fillStyle = '#a7aab0'; for (let i = 0; i < 6; i++) { ctx.fillRect(d.x - 150 + i * 50, d.y - 150, 2, 300); ctx.fillRect(d.x - 150, d.y - 150 + i * 50, 300, 2); } break;
+    case 'plaza': ctx.fillStyle = '#b9bcc2'; ctx.fillRect(d.x - 150, d.y - 150, 300, 300); ctx.fillStyle = '#7cc35a'; ctx.fillRect(d.x - 130, d.y - 130, 260, 260); circ(d.x - 70, d.y - 70, 22, '#47b04f'); circ(d.x + 70, d.y + 60, 26, '#47b04f'); circ(d.x + 60, d.y - 80, 18, '#47b04f'); break;
+    case 'manhole': circ(d.x, d.y, 11, '#3d4249'); ctx.strokeStyle = '#6b7079'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(d.x, d.y, 7, 0, 7); ctx.stroke(); break;
+    case 'hydrant': circ(d.x, d.y, 7, '#e04b3a'); circ(d.x, d.y, 3, '#ffd23f'); break;
+    case 'path': ctx.strokeStyle = '#e8d29a'; ctx.lineWidth = 46; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(d.x - Math.cos(d.a) * d.len / 2, d.y - Math.sin(d.a) * d.len / 2); ctx.quadraticCurveTo(d.x + 80, d.y - 80, d.x + Math.cos(d.a) * d.len / 2, d.y + Math.sin(d.a) * d.len / 2); ctx.stroke(); break;
+    case 'flowers': for (let i = 0; i < 5; i++) circ(d.x + Math.cos(i * 1.3) * 10, d.y + Math.sin(i * 1.7) * 10, 3.5, d.c); circ(d.x, d.y, 2.5, '#ffd23f'); break;
+    case 'hill': ctx.fillStyle = '#a6ea84'; ctx.beginPath(); ctx.ellipse(d.x, d.y, d.r, d.r * 0.6, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#b6f096'; ctx.beginPath(); ctx.ellipse(d.x - d.r * 0.2, d.y - d.r * 0.15, d.r * 0.5, d.r * 0.3, 0, 0, 7); ctx.fill(); break;
+    case 'rainbow': { const cols = ['#ff6f6f', '#ffb03b', '#fff36b', '#6fdc8c', '#6fc3ff', '#b07cff']; ctx.lineWidth = 9; ctx.globalAlpha = 0.55; cols.forEach((c, i) => { ctx.strokeStyle = c; ctx.beginPath(); ctx.arc(d.x, d.y, d.r - i * 9, Math.PI, 0); ctx.stroke(); }); ctx.globalAlpha = 1; break; }
+    case 'cloud': ctx.globalAlpha = 0.55; circ(d.x, d.y, d.r * 0.6, '#fff'); circ(d.x + d.r * 0.5, d.y + 5, d.r * 0.45, '#fff'); circ(d.x - d.r * 0.5, d.y + 8, d.r * 0.4, '#fff'); ctx.globalAlpha = 1; break;
+    case 'sandbox': ctx.fillStyle = '#9a6233'; ctx.fillRect(d.x - d.r, d.y - d.r, d.r * 2, d.r * 2); ctx.fillStyle = '#f2d49b'; ctx.fillRect(d.x - d.r + 8, d.y - d.r + 8, d.r * 2 - 16, d.r * 2 - 16); circ(d.x + 10, d.y - 5, 8, '#ff5d5d'); break;
+    case 'merry': circ(d.x, d.y, d.r, '#5d9bd6'); for (let i = 0; i < 4; i++) { ctx.fillStyle = ['#ff5d5d', '#ffd23f', '#7ddc5a', '#ffffff'][i]; ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.arc(d.x, d.y, d.r - 6, i * Math.PI / 2 + S.t, (i + 1) * Math.PI / 2 + S.t); ctx.fill(); } circ(d.x, d.y, 8, '#2a2a2e'); break;
+    case 'hopscotch': ctx.save(); ctx.translate(d.x, d.y); ctx.rotate(d.a); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 4; for (let i = 0; i < 5; i++) ctx.strokeRect(-90 + i * 36, -18, 36, 36); ctx.restore(); break;
+    case 'ring': ctx.strokeStyle = d.c; ctx.lineWidth = 6; ctx.globalAlpha = 0.7; ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, 7); ctx.stroke(); ctx.globalAlpha = 1; break;
+    case 'towel': ctx.save(); ctx.translate(d.x, d.y); ctx.rotate(d.a); ctx.fillStyle = d.c; ctx.fillRect(-40, -20, 80, 40); ctx.fillStyle = '#ffffff'; ctx.fillRect(-40, -6, 80, 6); ctx.restore(); break;
+    case 'shell': circ(d.x, d.y, 6, '#ffd1dc'); break;
+    case 'star': ctx.save(); ctx.translate(d.x, d.y); star(0, 0, 9, '#ff8c42'); ctx.restore(); break;
+  }
+}
+function drawGround(p) {
+  const vr = viewRadius() + 60;
+  ctx.fillStyle = MAP.ground; ctx.fillRect(0, 0, WORLD, WORLD);
+  if (MAP.id === 'city') { // street markings on the 400px grid
+    ctx.fillStyle = '#f4e27a'; for (let k = 400; k < WORLD; k += 400) for (let s = 0; s < WORLD; s += 60) { if (Math.abs(s - p.y) < vr) ctx.fillRect(k - 2, s, 4, 30); if (Math.abs(s - p.x) < vr) ctx.fillRect(s, k - 2, 30, 4); }
+    ctx.fillStyle = '#ffffff'; for (let i = 400; i < WORLD; i += 400) for (let j = 400; j < WORLD; j += 400) { if (Math.hypot(i - p.x, j - p.y) > vr + 100) continue; for (let s = 0; s < 6; s++) { ctx.fillRect(i - 60 + s * 22, j - 70, 12, 22); ctx.fillRect(i - 60 + s * 22, j + 48, 12, 22); ctx.fillRect(i - 70, j - 60 + s * 22, 22, 12); ctx.fillRect(i + 48, j - 60 + s * 22, 22, 12); } }
+  }
+  if (MAP.id === 'playground') { ctx.fillStyle = 'rgba(255,255,255,.08)'; for (let i = 0; i < 400; i++) { const x = (i * 977) % WORLD, y = (i * 571) % WORLD; if (Math.abs(x - p.x) < vr && Math.abs(y - p.y) < vr) ctx.fillRect(x, y, 6, 6); } }
+  for (const d of S.decor) if (Math.abs(d.x - p.x) < vr + (d.rad || 60) && Math.abs(d.y - p.y) < vr + (d.rad || 60)) drawDecor(d);
+}
+
 function startLevel() {
   S.state = 'play'; S.kills = 0; S.hits = 0; S.redFlash = 0; S.bumpT = 0; S.wallCd = 0; S.goal = goalFor(S.level); S.hp = HP_MAX; S.levelCoins = 0;
   S.enemies = []; S.parts = []; S.debris = []; S.coinsOnGround = []; S.spawnT = 1.2; S.iframes = 1.5; S.flash = 0;
@@ -183,7 +425,8 @@ function spawnEnemy(x, y) {
     x = Math.max(40, Math.min(WORLD - 40, x)); y = Math.max(40, Math.min(WORLD - 40, y));
   }
   const e = makeCar(x, y, Math.atan2(p.y - y, p.x - x), true);
-  e.speed = 270 * Math.min(0.92, 0.78 + S.level * 0.015);
+  e.speed = 270 * Math.min(0.92, 0.78 + S.level * 0.015) * MAP.speed;
+  e.skin = MAP.enemies[Math.floor(Math.random() * MAP.enemies.length)];
   e.turn = Math.min(2.3, 1.6 + S.level * 0.05);
   e.vx = Math.cos(e.a) * e.speed * 0.6; e.vy = Math.sin(e.a) * e.speed * 0.6;
   S.enemies.push(e); S.stats.spawns++;
@@ -207,7 +450,7 @@ function driveCar(c, steer, dt) {
 }
 function collideObstacle(c, o) {
   let nx, ny, d;
-  if (o.type === 'tires') {
+  if (o.shape === 'c') {
     const dx = c.x - o.x, dy = c.y - o.y; d = Math.hypot(dx, dy); const min = c.r + o.r;
     if (d >= min || d === 0) return; nx = dx / d; ny = dy / d; c.x = o.x + nx * min; c.y = o.y + ny * min;
   } else {
@@ -243,7 +486,7 @@ function drawTracks(c) {
   const L = [c.x - ca * back - sa * side, c.y - sa * back + ca * side], R = [c.x - ca * back + sa * side, c.y - sa * back - ca * side];
   if (c.lastL && Math.hypot(L[0] - c.lastL[0], L[1] - c.lastL[1]) > 4) {
     const slip = Math.abs(angDiff(c.a, Math.atan2(c.vy, c.vx)));
-    tctx.strokeStyle = `rgba(110,55,20,${Math.min(0.32, 0.12 + slip * 0.35)})`;
+    tctx.strokeStyle = `rgba(${MAP.track},${Math.min(0.34, 0.13 + slip * 0.35)})`;
     tctx.lineWidth = (c.enemy ? 7 : 4) * TRACK_SCALE; tctx.lineCap = 'round';
     tctx.beginPath();
     tctx.moveTo(c.lastL[0] * TRACK_SCALE, c.lastL[1] * TRACK_SCALE); tctx.lineTo(L[0] * TRACK_SCALE, L[1] * TRACK_SCALE);
@@ -253,7 +496,7 @@ function drawTracks(c) {
   } else if (!c.lastL) { c.lastL = L; c.lastR = R; }
 }
 
-function explode(x, y, big) {
+function explode(x, y, big, col) {
   S.stats.explosions++; S.shake = Math.max(S.shake, 8); boom();
   for (let i = 0; i < (big ? 14 : 9); i++) {
     const an = Math.random() * Math.PI * 2, sp = 30 + Math.random() * 90;
@@ -261,7 +504,7 @@ function explode(x, y, big) {
   }
   for (let i = 0; i < 4; i++) {
     const an = Math.random() * Math.PI * 2, sp = 120 + Math.random() * 160;
-    S.debris.push({ x, y, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, a: Math.random() * 6, va: (Math.random() - 0.5) * 14, kind: i < 3 ? 'tire' : 'chassis', life: 2.5 });
+    S.debris.push({ x, y, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, a: Math.random() * 6, va: (Math.random() - 0.5) * 14, kind: i < 3 ? 'tire' : 'chassis', col: col || '#1e5aa8', life: 2.5 });
   }
 }
 function dropCoin(x, y) { S.coinsOnGround.push({ x: x + (Math.random() - 0.5) * 30, y: y + (Math.random() - 0.5) * 30, t: 0 }); }
@@ -284,6 +527,7 @@ function update(dt) {
     if (S.clearT > 1.6) { S.state = 'clear'; S.clearT = 0; S.tally = 0; beep(523, 0.15, 'triangle', 0.2); setTimeout(() => beep(784, 0.25, 'triangle', 0.2), 150); }
     return;
   }
+  if (S.state === 'maps') { S.mapsT += dt; return; }
   if (S.state === 'over') { S.overT += dt; return; }
   if (S.state === 'clear') { S.clearT += dt; S.tally = Math.min(S.levelCoins + bonus(), S.tally + dt * 30); return; }
   if (S.state !== 'play') return;
@@ -313,7 +557,7 @@ function update(dt) {
     if (Math.hypot(a.x - b.x, a.y - b.y) < a.r + b.r - 6) {
       dead.add(a); dead.add(b);
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      explode(mx, my, true);
+      explode(mx, my, true, (a.skin || MAP.enemies[0]).c1);
       if (Math.random() < 0.6) dropCoin(mx, my);
     }
   }
@@ -355,7 +599,9 @@ function levelDone() {
   S.enemies = []; S.coinsOnGround = [];
   S.parts = S.parts.map(p => ({ ...p, life: 0.3 }));
   S.coins += bonus(); save.coins = S.coins;
+  const before = save.best;
   save.best = Math.max(save.best, S.level + 1); save.level = S.level + 1; persist();
+  const nm = MAPS.find(m => m.unlock > before && m.unlock <= save.best); S.newMap = nm ? nm.name : '';
   beep(523, 0.12, 'triangle', 0.2); setTimeout(() => beep(659, 0.12, 'triangle', 0.2), 110); setTimeout(() => beep(784, 0.3, 'triangle', 0.2), 220);
   // confetti
   for (let i = 0; i < 40; i++) { const an = -Math.PI / 2 + (Math.random() - 0.5) * 2.2, sp = 150 + Math.random() * 250; S.parts.push({ x: S.player.x, y: S.player.y - 30, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, r: 4, life: 1.5, max: 1.5, confetti: ['#ff4f7b','#ffd23f','#3ee0ff','#7cff6b','#b06bff'][i % 5] }); }
@@ -366,29 +612,7 @@ function tap() {
 }
 
 // ---------- drawing ----------
-const COL = { sand: '#d98a4b', sand2: '#e39a5c', plateau: '#e8a868', plateauEdge: '#c47538', crater: '#c97a3e' };
 function rr(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
-function drawCar(c, blink) {
-  if (blink) return;
-  ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.a);
-  ctx.fillStyle = 'rgba(0,0,0,.18)'; rr(ctx, -c.r + 3, -c.r * 0.8 + 4, c.r * 2, c.r * 1.6, 6); ctx.fill();
-  if (c.enemy) {
-    ctx.fillStyle = '#1b1f2a';
-    for (const [tx, ty] of [[-14, -20], [10, -20], [-14, 13], [10, 13]]) { rr(ctx, tx, ty, 14, 8, 3); ctx.fill(); }
-    ctx.fillStyle = '#1e5aa8'; rr(ctx, -22, -13, 44, 26, 6); ctx.fill();
-    ctx.fillStyle = '#2f7fd6'; rr(ctx, -12, -10, 22, 20, 4); ctx.fill();
-    ctx.fillStyle = '#9fe3ff'; rr(ctx, 4, -9, 6, 18, 2); ctx.fill();
-    ctx.fillStyle = '#ffe28a'; ctx.fillRect(19, -11, 3, 5); ctx.fillRect(19, 6, 3, 5);
-  } else {
-    ctx.fillStyle = '#20242d';
-    for (const [tx, ty] of [[-11, -10], [5, -10], [-11, 7], [5, 7]]) { ctx.fillRect(tx, ty, 8, 3); }
-    ctx.fillStyle = '#22d3ee'; rr(ctx, -14, -8, 28, 16, 4); ctx.fill();
-    ctx.fillStyle = '#e0fbff'; rr(ctx, -4, -6, 9, 12, 2); ctx.fill();
-    ctx.fillStyle = '#0e9fbf'; ctx.fillRect(-12, -6, 5, 12);
-    ctx.fillStyle = '#fff6a0'; ctx.fillRect(12, -7, 2, 4); ctx.fillRect(12, 3, 2, 4);
-  }
-  ctx.restore();
-}
 function drawCoin(x, y, s, t) {
   const sx = Math.abs(Math.cos(t * 3)) * 0.7 + 0.3;
   ctx.save(); ctx.translate(x, y); ctx.scale(sx, 1);
@@ -399,43 +623,18 @@ function drawCoin(x, y, s, t) {
 }
 function drawWorld() {
   const p = S.player, sh = S.shake;
-  ctx.fillStyle = '#b8682e'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = MAP.outer; ctx.fillRect(0, 0, W, H);
   ctx.save();
   ctx.translate(W / 2 + (Math.random() - 0.5) * sh, H / 2 + (Math.random() - 0.5) * sh); ctx.scale(ZOOM, ZOOM); ctx.translate(-p.x, -p.y);
-  ctx.fillStyle = COL.sand; ctx.fillRect(0, 0, WORLD, WORLD);
-  for (const c of S.craters) {
-    ctx.fillStyle = COL.crater; ctx.beginPath(); ctx.ellipse(c.x, c.y, c.r, c.r * 0.8, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = COL.sand2; ctx.beginPath(); ctx.ellipse(c.x + 3, c.y + 3, c.r * 0.75, c.r * 0.6, 0, 0, 7); ctx.fill();
-  }
-  for (const pts of S.plateaus) {
-    ctx.fillStyle = COL.plateauEdge; ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x + 6, y + 8) : ctx.moveTo(x + 6, y + 8)); ctx.fill();
-    ctx.fillStyle = COL.plateau; ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.fill();
-  }
+  drawGround(p);
   ctx.drawImage(trackCv, 0, 0, WORLD, WORLD);
-  ctx.strokeStyle = '#8f4f22'; ctx.lineWidth = 14; ctx.strokeRect(-7, -7, WORLD + 14, WORLD + 14);
-  for (const o of S.obstacles) {
-    if (o.type === 'tires') {
-      for (const [dx, dy] of [[-12, -10], [12, -10], [0, 10]]) {
-        ctx.fillStyle = '#2a2a2e'; ctx.beginPath(); ctx.arc(o.x + dx, o.y + dy, 13, 0, 7); ctx.fill();
-        ctx.fillStyle = '#7a5a40'; ctx.beginPath(); ctx.arc(o.x + dx, o.y + dy, 5, 0, 7); ctx.fill();
-      }
-    } else if (o.type === 'crate') {
-      ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(o.x - o.w / 2 + 5, o.y - o.h / 2 + 6, o.w, o.h);
-      ctx.fillStyle = '#b5773e'; ctx.fillRect(o.x - o.w / 2, o.y - o.h / 2, o.w, o.h);
-      ctx.strokeStyle = '#7d4d22'; ctx.lineWidth = 4; ctx.strokeRect(o.x - o.w / 2 + 2, o.y - o.h / 2 + 2, o.w - 4, o.h - 4);
-      ctx.beginPath(); ctx.moveTo(o.x - o.w / 2 + 4, o.y - o.h / 2 + 4); ctx.lineTo(o.x + o.w / 2 - 4, o.y + o.h / 2 - 4); ctx.stroke();
-    } else {
-      ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(o.x - o.w / 2 + 5, o.y - o.h / 2 + 6, o.w, o.h);
-      ctx.fillStyle = '#c9c4bb'; ctx.fillRect(o.x - o.w / 2, o.y - o.h / 2, o.w, o.h);
-      ctx.fillStyle = '#e04b3a'; const hor = o.w > o.h;
-      for (let i = 0; i < 3; i++) hor ? ctx.fillRect(o.x - o.w / 2 + 12 + i * 42, o.y - o.h / 2 + 4, 18, o.h - 8) : ctx.fillRect(o.x - o.w / 2 + 4, o.y - o.h / 2 + 12 + i * 42, o.w - 8, 18);
-    }
-  }
+  ctx.strokeStyle = MAP.edge; ctx.lineWidth = 14; ctx.strokeRect(-7, -7, WORLD + 14, WORLD + 14);
+  { const vr = viewRadius() + 40; for (const o of S.obstacles) { const ext = o.r || Math.max(o.w, o.h); if (Math.abs(o.x - p.x) < vr + ext && Math.abs(o.y - p.y) < vr + ext) drawObstacle(o); } }
   for (const c of S.coinsOnGround) drawCoin(c.x, c.y, 14, c.t + c.x);
   for (const d of S.debris) {
     ctx.save(); ctx.globalAlpha = Math.min(1, d.life); ctx.translate(d.x, d.y); ctx.rotate(d.a);
     if (d.kind === 'tire') { ctx.fillStyle = '#1b1f2a'; rr(ctx, -7, -4, 14, 8, 3); ctx.fill(); }
-    else { ctx.fillStyle = '#1e5aa8'; rr(ctx, -12, -8, 24, 16, 4); ctx.fill(); ctx.fillStyle = '#3a3a3a'; ctx.fillRect(-6, -4, 10, 8); }
+    else { ctx.fillStyle = d.col; rr(ctx, -12, -8, 24, 16, 4); ctx.fill(); ctx.fillStyle = '#3a3a3a'; ctx.fillRect(-6, -4, 10, 8); }
     ctx.restore();
   }
   for (const e of S.enemies) drawCar(e, false);
@@ -510,6 +709,8 @@ function drawClear() {
   ctx.font = '36px system-ui,"Apple Color Emoji",sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🎁', 110, -20);
   txt(prog >= 1 ? 'Gift unlocked!' : `${Math.round(prog * 5)}/5 to a gift`, -20, 6, 15);
   drawCoin(-40, 50, 20, 0); txt('+' + Math.floor(S.tally), 20, 51, 36, '#fff');
+  if (S.newMap) txt('New map unlocked: ' + S.newMap + '!', 0, 88, 20, '#7cff6b');
+  if (t > 0.6) txt('🗺️ button = pick a map', 0, 180, 15);
   if (t > 0.6) { const pulse = 1 + Math.sin(t * 5) * 0.05; ctx.save(); ctx.translate(0, 130); ctx.scale(pulse, pulse); ctx.fillStyle = '#22c55e'; rr(ctx, -130, -32, 260, 64, 32); ctx.fill(); txt('Tap to Continue', 0, 0, 26); ctx.restore(); }
   ctx.restore();
 }
@@ -527,12 +728,65 @@ function drawOver() {
   if (t > 0.7) { const pulse = 1 + Math.sin(t * 5) * 0.05; ctx.save(); ctx.translate(0, 125); ctx.scale(pulse, pulse); ctx.fillStyle = '#22c55e'; rr(ctx, -120, -32, 240, 64, 32); ctx.fill(); txt('Tap to Retry', 0, 0, 26); ctx.restore(); }
   ctx.restore();
 }
+// ---------- map select ----------
+const mapsBtn = document.getElementById('maps');
+function openMaps() { if (S.state === 'maps' || S.state === 'celebrate') return; S.mapsFrom = S.state; S.state = 'maps'; S.mapsT = 0; S.lockMsg = ''; zones.clear(); }
+function closeMaps() { if (S.state === 'maps') S.state = S.mapsFrom || 'play'; }
+function selectMap(id) {
+  const m = mapById(id); if (m.id !== id || !isUnlocked(m)) return false;
+  save.map = id; persist();
+  if (S.mapsFrom === 'clear') S.level++;
+  S.coins = save.coins; S.msgT = 0; startLevel(); beep(880, 0.08, 'square', 0.1);
+  return true;
+}
+mapsBtn.addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); unlockAudio(); S.state === 'maps' ? closeMaps() : openMaps(); });
+function mapsLayout() {
+  const cols = W > H ? 3 : 2, gap = 14, top = 90, bottomPad = 90;
+  const cw = Math.min(240, (W - gap * (cols + 1)) / cols), rows = Math.ceil(MAPS.length / cols);
+  const ch = Math.min(cw * 0.8, (H - top - bottomPad - gap * (rows - 1)) / rows);
+  const x0 = (W - (cols * cw + (cols - 1) * gap)) / 2;
+  const cards = MAPS.map((m, i) => ({ id: m.id, x: x0 + (i % cols) * (cw + gap), y: top + Math.floor(i / cols) * (ch + gap), w: cw, h: ch }));
+  const back = { x: W / 2 - 110, y: Math.min(H - 76, top + rows * (ch + gap) + 6), w: 220, h: 58 };
+  return { cards, back };
+}
+function mapsClick(x, y) {
+  const L = mapsLayout();
+  if (x > L.back.x && x < L.back.x + L.back.w && y > L.back.y && y < L.back.y + L.back.h) { closeMaps(); return; }
+  for (const c of L.cards) if (x > c.x && x < c.x + c.w && y > c.y && y < c.y + c.h) {
+    const m = mapById(c.id);
+    if (isUnlocked(m)) selectMap(m.id); else { S.lockMsg = 'Reach Level ' + m.unlock + ' to unlock ' + m.name + '!'; beep(180, 0.15, 'triangle', 0.12); }
+    return;
+  }
+}
+function drawMaps() {
+  ctx.fillStyle = 'rgba(30,20,50,.82)'; ctx.fillRect(0, 0, W, H);
+  txt('Crash Maps', W / 2, 34, 30, '#ffd23f'); txt('Pick a map!', W / 2, 66, 16);
+  const L = mapsLayout(), keep = MAP;
+  for (const c of L.cards) {
+    const m = mapById(c.id), open = isUnlocked(m);
+    ctx.save(); rr(ctx, c.x, c.y, c.w, c.h, 16); ctx.clip();
+    ctx.fillStyle = m.ground; ctx.fillRect(c.x, c.y, c.w, c.h);
+    ctx.fillStyle = m.outer; ctx.fillRect(c.x, c.y + c.h - 34, c.w, 34);
+    MAP = m; ctx.save(); ctx.translate(c.x + c.w / 2, c.y + (c.h - 34) / 2); ctx.scale(2, 2); ctx.rotate(-0.4); drawPlayerSkin(m.player); ctx.restore();
+    ctx.save(); ctx.translate(c.x + c.w * 0.2, c.y + (c.h - 34) * 0.35); ctx.rotate(0.6); drawEnemySkin(m.enemies[0]); ctx.restore();
+    if (!open) { ctx.fillStyle = 'rgba(20,20,30,.62)'; ctx.fillRect(c.x, c.y, c.w, c.h); }
+    ctx.restore();
+    ctx.lineWidth = save.map === m.id ? 5 : 2; ctx.strokeStyle = save.map === m.id ? '#ffd23f' : 'rgba(255,255,255,.5)'; rr(ctx, c.x, c.y, c.w, c.h, 16); ctx.stroke();
+    txt(m.name, c.x + c.w / 2, c.y + c.h - 17, Math.min(18, c.w / 9));
+    if (!open) { ctx.font = '28px system-ui,"Apple Color Emoji",sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🔒', c.x + c.w / 2, c.y + (c.h - 34) / 2 - 12); txt('Reach Level ' + m.unlock + '!', c.x + c.w / 2, c.y + (c.h - 34) / 2 + 20, Math.min(16, c.w / 10), '#ffd23f'); }
+  }
+  MAP = keep;
+  ctx.fillStyle = '#22c55e'; rr(ctx, L.back.x, L.back.y, L.back.w, L.back.h, 29); ctx.fill(); txt(S.mapsFrom === 'clear' ? 'Keep this map ▶' : 'Back ▶', W / 2, L.back.y + 29, 22);
+  if (S.lockMsg) txt(S.lockMsg, W / 2, Math.max(80, L.back.y - 14), 15, '#ffd23f');
+}
 function render() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   drawWorld();
-  if (S.state !== 'clear' && S.state !== 'over') drawHUD();
+  if (S.state !== 'clear' && S.state !== 'over' && S.state !== 'maps') drawHUD();
   if (S.state === 'clear') drawClear();
   if (S.state === 'over') drawOver();
+  if (S.state === 'maps') drawMaps();
+  mapsBtn.style.display = S.state === 'celebrate' ? 'none' : 'block';
   if (S.redFlash > 0) { ctx.fillStyle = `rgba(255,60,60,${S.redFlash * 0.6})`; ctx.fillRect(0, 0, W, H); }
   if (S.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${Math.min(1, S.flash)})`; ctx.fillRect(0, 0, W, H); }
 }
@@ -547,5 +801,5 @@ startLevel();
 requestAnimationFrame(frame);
 
 // test / debug hook
-window.DD = { COMBAT: { TRUCK_DMG, MAX_HITS, CAR_IFRAMES, BUMP_DMG, BUMP_CD, BUMP_GLOBAL_CD }, zones, TUNE: { HOLD_MS, TAP_STEER, HOLD_STEER, NUDGE_STEER, NUDGE_S }, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
+window.DD = { MAPS, get MAP() { return MAP; }, unlockedMaps, selectMap, openMaps, closeMaps, mapsLayout, COMBAT: { TRUCK_DMG, MAX_HITS, CAR_IFRAMES, BUMP_DMG, BUMP_CD, BUMP_GLOBAL_CD }, zones, TUNE: { HOLD_MS, TAP_STEER, HOLD_STEER, NUDGE_STEER, NUDGE_S }, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
 })();
