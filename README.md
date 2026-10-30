@@ -5,8 +5,8 @@ A cartoony top-down drift game for kids. Your little cyan car never stops drivin
 **Play:** https://bryankeeling06-eng.github.io/desert-drift/
 
 ## Controls
-- **Touch:** touch and hold the **left** half of the screen to turn left, the **right** half to turn right (both = straight). On the Level Complete screen, tap anywhere to continue — that tap never steers.
-- **Keyboard:** ← → or A / D
+- **Touch:** **tap** the left/right half of the screen for a small nudge; **hold** it to spin in a tight circle that way (holding both halves = straight). On the Level Complete screen, tap anywhere to continue — that tap never steers.
+- **Keyboard:** ← → or A / D — quick press = nudge, hold = spin
 - 🔊 button mutes sound
 
 ## Rules

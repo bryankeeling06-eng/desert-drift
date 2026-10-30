@@ -52,29 +52,53 @@ setMuted(save.muted);
 
 // ---------- input ----------
 const keys = {};
-// Half-screen tap zones: each active pointer belongs to a side; pointers that started on UI (Tap to Continue, HUD) never steer.
-const zones = new Map(); // pointerId -> -1 (left) | 1 (right)
-let steerCur = 0;
+// Half-screen tap zones with tap-vs-hold feel.
+// Every press (touch pointer or steering key) is a source {side, t0}. Side is fixed at press time.
+//  - pressed < HOLD_MS: gentle pre-turn (TAP_STEER)
+//  - pressed >= HOLD_MS: strong continuous spin (HOLD_STEER)
+//  - released before HOLD_MS: short nudge (NUDGE_STEER for NUDGE_S seconds)
+const HOLD_MS = 180, TAP_STEER = 0.2, HOLD_STEER = 1.45, NUDGE_STEER = 0.3, NUDGE_S = 0.1;
+const zones = new Map(); // id -> {side, t0}
+let steerCur = 0, nudgeT = 0, nudgeSide = 0;
+const now = () => performance.now();
 function hudBottom() { return 14 + 124 * Math.max(1, Math.min(1.4, W / 380)); }
-addEventListener('keydown', e => { unlockAudio(); keys[e.key.toLowerCase()] = true; if (['arrowleft','arrowright','arrowup','arrowdown',' '].includes(e.key.toLowerCase())) e.preventDefault(); if (e.key === ' ' || e.key === 'Enter') tap(); });
-addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+function press(id, side) { if (!zones.has(id)) zones.set(id, { side, t0: now() }); }
+function release(id) {
+  const z = zones.get(id); if (!z) return; zones.delete(id);
+  if (now() - z.t0 < HOLD_MS && S.state === 'play') { nudgeT = NUDGE_S; nudgeSide = z.side; }
+}
+const KEYSIDE = { arrowleft: -1, a: -1, arrowright: 1, d: 1 };
+addEventListener('keydown', e => {
+  unlockAudio(); const k = e.key.toLowerCase(); keys[k] = true;
+  if (['arrowleft','arrowright','arrowup','arrowdown',' '].includes(k)) e.preventDefault();
+  if (KEYSIDE[k] && S.state === 'play') press('key:' + k, KEYSIDE[k]);
+  if (e.key === ' ' || e.key === 'Enter') tap();
+});
+addEventListener('keyup', e => { const k = e.key.toLowerCase(); keys[k] = false; if (KEYSIDE[k]) release('key:' + k); });
 cv.addEventListener('pointerdown', e => {
   unlockAudio(); e.preventDefault();
   if (S.state !== 'play') { tap(); return; }          // taps on menus only advance, never steer
   if (e.clientY < hudBottom()) return;                // HUD strip is not a steering zone
-  zones.set(e.pointerId, e.clientX < W / 2 ? -1 : 1);  // side is fixed at touch-down: no jitter while finger wiggles
+  press('p' + e.pointerId, e.clientX < W / 2 ? -1 : 1);
 });
-const endTouch = e => zones.delete(e.pointerId);
+const endTouch = e => release('p' + e.pointerId);
 cv.addEventListener('pointerup', endTouch); cv.addEventListener('pointercancel', endTouch); cv.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') endTouch(e); });
-addEventListener('blur', () => { zones.clear(); for (const k in keys) keys[k] = false; });
+function releaseAll() { zones.clear(); nudgeT = 0; for (const k in keys) keys[k] = false; }
+addEventListener('blur', releaseAll);
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
-function zoneState() { let l = false, r = false; for (const v of zones.values()) v < 0 ? (l = true) : (r = true); return { l, r }; }
+// per side: 0 = idle, 1 = pressed (pre-threshold), 2 = held
+function zoneState() {
+  const t = now(); let l = 0, r = 0;
+  for (const z of zones.values()) { const lv = t - z.t0 >= HOLD_MS ? 2 : 1; if (z.side < 0) l = Math.max(l, lv); else r = Math.max(r, lv); }
+  return { l, r };
+}
 function steerInput(dt) {
   const z = zoneState();
-  let t = 0;
-  if (keys['arrowleft'] || keys['a'] || z.l) t -= 1;
-  if (keys['arrowright'] || keys['d'] || z.r) t += 1;   // both held -> 0
-  const rate = t === 0 ? 7 : 5;                          // ease in, settle back a bit quicker
+  const mag = lv => lv === 2 ? HOLD_STEER : lv === 1 ? TAP_STEER : 0;
+  let t = (z.l && z.r) ? 0 : mag(z.r) - mag(z.l);          // both pressed -> straight
+  if (nudgeT > 0) { nudgeT -= dt; if (!z.l && !z.r) t = nudgeSide * NUDGE_STEER; }
+  const rate = t === 0 ? 7 : 12;                          // quick ramp to full spin, gentle ease-out
   steerCur += (t - steerCur) * Math.min(1, rate * dt);
   if (Math.abs(steerCur) < 0.01 && t === 0) steerCur = 0;
   return steerCur;
@@ -133,7 +157,7 @@ function buildLevel() {
 function startLevel() {
   S.state = 'play'; S.kills = 0; S.goal = goalFor(S.level); S.hp = HP_MAX; S.levelCoins = 0;
   S.enemies = []; S.parts = []; S.debris = []; S.coinsOnGround = []; S.spawnT = 1.2; S.iframes = 1.5; S.flash = 0;
-  zones.clear(); steerCur = 0;
+  zones.clear(); steerCur = 0; nudgeT = 0;
   S.player = makeCar(WORLD / 2, WORLD / 2, -Math.PI / 2, false);
   tctx.clearRect(0, 0, trackCv.width, trackCv.height);
   buildLevel();
@@ -144,9 +168,14 @@ function viewRadius() { return Math.hypot(W, H) / 2 / ZOOM; }
 function spawnEnemy(x, y) {
   const p = S.player;
   if (x === undefined) {
-    const an = Math.random() * Math.PI * 2, d = viewRadius() + 80;
-    x = Math.max(40, Math.min(WORLD - 40, p.x + Math.cos(an) * d));
-    y = Math.max(40, Math.min(WORLD - 40, p.y + Math.sin(an) * d));
+    // pick an off-screen point that is inside the arena (near walls, some directions are out of bounds)
+    const d = viewRadius() + 80;
+    for (let i = 0; i < 24; i++) {
+      const an = Math.random() * Math.PI * 2;
+      x = p.x + Math.cos(an) * d; y = p.y + Math.sin(an) * d;
+      if (x > 40 && x < WORLD - 40 && y > 40 && y < WORLD - 40) break;
+    }
+    x = Math.max(40, Math.min(WORLD - 40, x)); y = Math.max(40, Math.min(WORLD - 40, y));
   }
   const e = makeCar(x, y, Math.atan2(p.y - y, p.x - x), true);
   e.speed = 270 * Math.min(0.92, 0.78 + S.level * 0.015);
@@ -425,11 +454,12 @@ function drawHUD() {
   pill(w / 2 - 46, top + 50, 92, 24, 0.3); txt('Level ' + S.level, w / 2, top + 62, 15);
   pill(w / 2 - 70, top + 80, 140, 44, 0.3); crashIcon(w / 2 - 36, top + 102); txt(`${S.kills}/${S.goal}`, w / 2 + 22, top + 102, 26);
   if (S.state === 'play') { const z = zoneState(), hh = H / sc;
-    for (const [side, on] of [[-1, z.l || keys['arrowleft'] || keys['a']], [1, z.r || keys['arrowright'] || keys['d']]]) {
-      ctx.globalAlpha = on ? 0.55 : 0.16; const x = side < 0 ? 22 : w - 22;
-      txt(side < 0 ? '◀' : '▶', x, hh * 0.6, 30); ctx.globalAlpha = 1; } }
+    for (const [side, lv] of [[-1, z.l], [1, z.r]]) {
+      ctx.globalAlpha = lv === 2 ? 0.7 + 0.25 * Math.sin(S.t * 14) : lv === 1 ? 0.4 : 0.16;
+      const x = side < 0 ? 22 : w - 22, big = lv === 2 ? 38 : 30;
+      txt(side < 0 ? '◀' : '▶', x, hh * 0.6, big); ctx.globalAlpha = 1; } }
   if (S.msgT > 0) txt(S.msg, w / 2, top + 150, 26, '#ffd23f');
-  if (S.state === 'play' && S.t < 4 && S.level === save.best && S.kills === 0) { ctx.globalAlpha = Math.max(0, Math.min(1, 4 - S.t)); txt('Tap LEFT / RIGHT to steer!', w / 2, H / sc - 110, 24); txt('Make the trucks crash!', w / 2, H / sc - 78, 20, '#ffd23f'); ctx.globalAlpha = 1; }
+  if (S.state === 'play' && S.t < 4 && S.level === save.best && S.kills === 0) { ctx.globalAlpha = Math.max(0, Math.min(1, 4 - S.t)); txt('Tap to nudge, hold LEFT / RIGHT to spin!', w / 2, H / sc - 110, Math.min(22, w / 19)); txt('Make the trucks crash!', w / 2, H / sc - 78, 20, '#ffd23f'); ctx.globalAlpha = 1; }
   ctx.restore();
 }
 function star(x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); for (let i = 0; i < 10; i++) { const an = -Math.PI / 2 + i * Math.PI / 5, rr2 = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(an) * rr2, y + Math.sin(an) * rr2); } ctx.fill(); }
@@ -471,5 +501,5 @@ startLevel();
 requestAnimationFrame(frame);
 
 // test / debug hook
-window.DD = { zones, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
+window.DD = { zones, TUNE: { HOLD_MS, TAP_STEER, HOLD_STEER, NUDGE_STEER, NUDGE_S }, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
 })();
