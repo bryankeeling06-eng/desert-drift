@@ -3,9 +3,11 @@
 'use strict';
 const SAVE_KEY = 'desertDrift.v1';
 const WORLD = 2400, HP_MAX = 20, TRACK_SCALE = 0.5;
-// Damage model: 3 car hits = game over (shown as 3 heart pips). Bumping obstacles/walls only wears the
-// 20-segment bar by BUMP_DMG, at most once per BUMP_CD seconds per obstacle (and BUMP_GLOBAL_CD overall).
-const MAX_HITS = 3, CAR_IFRAMES = 1.5, BUMP_DMG = 1, BUMP_CD = 1.0, BUMP_GLOBAL_CD = 0.35, BUMP_MIN_SPEED = 40;
+// Damage model (one health bar, no hit counter on screen):
+//  - a truck hit drains TRUCK_DMG of the 20 segments (20 -> 13 -> 6); the 3rd truck hit always empties it = game over.
+//    Hits 1 and 2 never take the bar below 1, so death is always exactly the 3rd truck hit.
+//  - bumping obstacles/walls chips BUMP_DMG, rate-limited; bumps alone never kill (bar floors at 1 segment).
+const TRUCK_DMG = 7, MAX_HITS = 3, CAR_IFRAMES = 1.5, BUMP_DMG = 1, BUMP_CD = 1.0, BUMP_GLOBAL_CD = 0.35, BUMP_MIN_SPEED = 40;
 const cv = document.getElementById('game'), ctx = cv.getContext('2d');
 const muteBtn = document.getElementById('mute');
 let W = 0, H = 0, DPR = 1, ZOOM = 1;
@@ -158,7 +160,7 @@ function buildLevel() {
   }
 }
 function startLevel() {
-  S.state = 'play'; S.kills = 0; S.hits = 0; S.bumpT = 0; S.wallCd = 0; S.goal = goalFor(S.level); S.hp = HP_MAX; S.levelCoins = 0;
+  S.state = 'play'; S.kills = 0; S.hits = 0; S.redFlash = 0; S.bumpT = 0; S.wallCd = 0; S.goal = goalFor(S.level); S.hp = HP_MAX; S.levelCoins = 0;
   S.enemies = []; S.parts = []; S.debris = []; S.coinsOnGround = []; S.spawnT = 1.2; S.iframes = 1.5; S.flash = 0;
   zones.clear(); steerCur = 0; nudgeT = 0;
   S.player = makeCar(WORLD / 2, WORLD / 2, -Math.PI / 2, false);
@@ -226,10 +228,9 @@ function bump(holder, key) {
   if (S.state !== 'play') return;
   if ((holder[key] || 0) > S.t || S.bumpT > S.t) return;
   holder[key] = S.t + BUMP_CD; S.bumpT = S.t + BUMP_GLOBAL_CD;
-  S.hp = Math.max(0, S.hp - BUMP_DMG); S.stats.bumps++; S.shake = Math.max(S.shake, 4);
+  S.hp = Math.max(1, S.hp - BUMP_DMG); S.stats.bumps++; S.shake = Math.max(S.shake, 4);
   beep(110, 0.08, 'triangle', 0.14);
   for (let i = 0; i < 4; i++) { const an = Math.random() * 6.28; S.parts.push({ x: S.player.x, y: S.player.y, vx: Math.cos(an) * 60, vy: Math.sin(an) * 60, r: 5, life: 0.35, max: 0.5, confetti: '#f4d9b0' }); }
-  if (S.hp <= 0) gameOver('bumps');
 }
 function gameOver(why) {
   S.state = 'over'; S.overT = 0; S.overWhy = why; S.shake = 12;
@@ -274,6 +275,7 @@ function update(dt) {
   for (const d of S.debris) { d.x += d.vx * dt; d.y += d.vy * dt; d.vx *= 0.93; d.vy *= 0.93; d.a += d.va * dt; d.va *= 0.95; d.life -= dt; }
   S.debris = S.debris.filter(d => d.life > 0);
   if (S.flash > 0) S.flash = Math.max(0, S.flash - dt * 1.6);
+  if (S.redFlash > 0) S.redFlash = Math.max(0, S.redFlash - dt * 1.5);
   if (engGain && ac) engGain.gain.value = S.state === 'play' ? 0.04 : 0.0;
 
   if (S.state === 'celebrate') {
@@ -327,11 +329,13 @@ function update(dt) {
       const nx = dx / d, ny = dy / d;
       e.vx -= nx * 260; e.vy -= ny * 260; e.x -= nx * 6; e.y -= ny * 6;
       if (S.iframes <= 0) {
-        S.hits++; S.iframes = CAR_IFRAMES; S.stats.hits++; S.shake = 10;
+        S.hits++; S.iframes = CAR_IFRAMES; S.stats.hits++; S.shake = 14; S.redFlash = 0.7;
+        S.hp = S.hits >= MAX_HITS ? 0 : Math.max(1, S.hp - TRUCK_DMG);
         p.vx += nx * 220; p.vy += ny * 220;
         beep(200, 0.25, 'sawtooth', 0.15, -120);
-        if (S.hits >= MAX_HITS) { gameOver('cars'); return; }
-        S.msg = S.hits === MAX_HITS - 1 ? 'Careful! One more hit!' : 'Ouch! Hit ' + S.hits + '/' + MAX_HITS; S.msgT = 1.5;
+        if (S.hits >= MAX_HITS || S.hp <= 0) { gameOver('cars'); return; }
+        S.msg = ['Bonk!', 'Whoa!', 'Oof!'][Math.floor(Math.random() * 3)]; S.msgT = 1.0;
+        for (let i = 0; i < 6; i++) { const an = Math.random() * 6.28; S.parts.push({ x: p.x, y: p.y, vx: Math.cos(an) * 120, vy: Math.sin(an) * 120, r: 5, life: 0.5, max: 0.6, confetti: '#ffd23f' }); }
       }
     }
   }
@@ -474,11 +478,6 @@ function drawHUD() {
   pill(12, top + 28, HP_MAX * (segW + gap) + 8, 16, 0.35);
   for (let i = 0; i < HP_MAX; i++) { ctx.fillStyle = i < S.hp ? (S.hp <= 6 ? '#ff6b6b' : '#ffffff') : 'rgba(255,255,255,.18)'; ctx.fillRect(17 + i * (segW + gap), top + 31, segW, 10); }
   // coins
-  // car-hit pips: 3 hearts, one breaks per car hit
-  for (let i = 0; i < MAX_HITS; i++) { const hx = 22 + i * 26, hy = top + 64, lost = i >= MAX_HITS - S.hits;
-    heart(hx, hy, 13, 'rgba(90,40,10,.45)'); heart(hx, hy, 10, lost ? 'rgba(255,255,255,.25)' : '#ff4f7b');
-    if (lost) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(hx - 5, hy - 6); ctx.lineTo(hx + 5, hy + 2); ctx.stroke(); } }
-  txt('Hits ' + S.hits + '/' + MAX_HITS, 12, top + 86, 14, S.hits >= MAX_HITS - 1 ? '#ffd23f' : '#fff', 'left');
   const ct = String(S.coins); ctx.font = '900 24px "Trebuchet MS",system-ui'; const tw = ctx.measureText(ct).width;
   drawCoin(w - 30 - tw - 22, top + 16, 15, 0); txt(ct, w - 18, top + 17, 24, '#fff', 'right');
   // level + objective
@@ -490,7 +489,7 @@ function drawHUD() {
       const x = side < 0 ? 22 : w - 22, big = lv === 2 ? 38 : 30;
       txt(side < 0 ? '◀' : '▶', x, hh * 0.6, big); ctx.globalAlpha = 1; } }
   if (S.msgT > 0) txt(S.msg, w / 2, top + 150, 26, '#ffd23f');
-  if (S.state === 'play' && S.t < 4 && S.level === save.best && S.kills === 0) { ctx.globalAlpha = Math.max(0, Math.min(1, 4 - S.t)); txt('Tap to nudge, hold LEFT / RIGHT to spin!', w / 2, H / sc - 110, Math.min(22, w / 19)); txt('Make the trucks crash! 3 hits = out!', w / 2, H / sc - 78, Math.min(20, w / 20), '#ffd23f'); ctx.globalAlpha = 1; }
+  if (S.state === 'play' && S.t < 4 && S.level === save.best && S.kills === 0) { ctx.globalAlpha = Math.max(0, Math.min(1, 4 - S.t)); txt('Tap to nudge, hold LEFT / RIGHT to spin!', w / 2, H / sc - 110, Math.min(22, w / 19)); txt('Make the trucks crash into each other!', w / 2, H / sc - 78, Math.min(20, w / 20), '#ffd23f'); ctx.globalAlpha = 1; }
   ctx.restore();
 }
 function star(x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); for (let i = 0; i < 10; i++) { const an = -Math.PI / 2 + i * Math.PI / 5, rr2 = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(an) * rr2, y + Math.sin(an) * rr2); } ctx.fill(); }
@@ -521,7 +520,7 @@ function drawOver() {
   ctx.save(); ctx.translate(cx, cy); ctx.scale(s, s);
   ctx.fillStyle = 'rgba(255,255,255,.12)'; rr(ctx, -170, -200, 340, 380, 30); ctx.fill();
   ctx.font = '64px system-ui,"Apple Color Emoji",sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('💫', 0, -140);
-  txt(S.overWhy === 'cars' ? 'Crashed 3 times!' : 'Too many bumps!', 0, -75, 34, '#ffd23f');
+  txt('Crashed out!', 0, -75, 38, '#ffd23f');
   txt('Good try! You reached', 0, -30, 18);
   txt('Level ' + S.level, 0, 4, 30);
   drawCoin(-135, 50, 18, 0); txt('+' + S.levelCoins + ' coins this run', 15, 51, 22, '#fff', 'center');
@@ -534,6 +533,7 @@ function render() {
   if (S.state !== 'clear' && S.state !== 'over') drawHUD();
   if (S.state === 'clear') drawClear();
   if (S.state === 'over') drawOver();
+  if (S.redFlash > 0) { ctx.fillStyle = `rgba(255,60,60,${S.redFlash * 0.6})`; ctx.fillRect(0, 0, W, H); }
   if (S.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${Math.min(1, S.flash)})`; ctx.fillRect(0, 0, W, H); }
 }
 
@@ -547,5 +547,5 @@ startLevel();
 requestAnimationFrame(frame);
 
 // test / debug hook
-window.DD = { COMBAT: { MAX_HITS, CAR_IFRAMES, BUMP_DMG, BUMP_CD, BUMP_GLOBAL_CD }, zones, TUNE: { HOLD_MS, TAP_STEER, HOLD_STEER, NUDGE_STEER, NUDGE_S }, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
+window.DD = { COMBAT: { TRUCK_DMG, MAX_HITS, CAR_IFRAMES, BUMP_DMG, BUMP_CD, BUMP_GLOBAL_CD }, zones, TUNE: { HOLD_MS, TAP_STEER, HOLD_STEER, NUDGE_STEER, NUDGE_S }, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
 })();
