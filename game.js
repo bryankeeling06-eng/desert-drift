@@ -51,25 +51,33 @@ muteBtn.addEventListener('pointerdown', e => { e.stopPropagation(); unlockAudio(
 setMuted(save.muted);
 
 // ---------- input ----------
-const keys = {}; let touchId = null, touchX0 = 0, touchX = 0, steerTouch = 0;
+const keys = {};
+// Half-screen tap zones: each active pointer belongs to a side; pointers that started on UI (Tap to Continue, HUD) never steer.
+const zones = new Map(); // pointerId -> -1 (left) | 1 (right)
+let steerCur = 0;
+function hudBottom() { return 14 + 124 * Math.max(1, Math.min(1.4, W / 380)); }
 addEventListener('keydown', e => { unlockAudio(); keys[e.key.toLowerCase()] = true; if (['arrowleft','arrowright','arrowup','arrowdown',' '].includes(e.key.toLowerCase())) e.preventDefault(); if (e.key === ' ' || e.key === 'Enter') tap(); });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
-cv.addEventListener('pointerdown', e => { unlockAudio(); e.preventDefault(); if (touchId === null) { touchId = e.pointerId; touchX0 = touchX = e.clientX; } tap(); });
-cv.addEventListener('pointermove', e => { if (e.pointerId === touchId) { touchX = e.clientX; } });
-const endTouch = e => { if (e.pointerId === touchId) { touchId = null; steerTouch = 0; } };
-cv.addEventListener('pointerup', endTouch); cv.addEventListener('pointercancel', endTouch);
+cv.addEventListener('pointerdown', e => {
+  unlockAudio(); e.preventDefault();
+  if (S.state !== 'play') { tap(); return; }          // taps on menus only advance, never steer
+  if (e.clientY < hudBottom()) return;                // HUD strip is not a steering zone
+  zones.set(e.pointerId, e.clientX < W / 2 ? -1 : 1);  // side is fixed at touch-down: no jitter while finger wiggles
+});
+const endTouch = e => zones.delete(e.pointerId);
+cv.addEventListener('pointerup', endTouch); cv.addEventListener('pointercancel', endTouch); cv.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') endTouch(e); });
+addEventListener('blur', () => { zones.clear(); for (const k in keys) keys[k] = false; });
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
-function steerInput() {
-  let s = 0;
-  if (keys['arrowleft'] || keys['a']) s -= 1;
-  if (keys['arrowright'] || keys['d']) s += 1;
-  if (touchId !== null) {
-    let dx = touchX - touchX0;
-    // follow-the-finger: if the finger keeps going past full lock, slide the anchor so reversing is instant
-    if (dx > 60) { touchX0 = touchX - 60; dx = 60; } else if (dx < -60) { touchX0 = touchX + 60; dx = -60; }
-    steerTouch = dx / 60; s += steerTouch;
-  }
-  return Math.max(-1, Math.min(1, s));
+function zoneState() { let l = false, r = false; for (const v of zones.values()) v < 0 ? (l = true) : (r = true); return { l, r }; }
+function steerInput(dt) {
+  const z = zoneState();
+  let t = 0;
+  if (keys['arrowleft'] || keys['a'] || z.l) t -= 1;
+  if (keys['arrowright'] || keys['d'] || z.r) t += 1;   // both held -> 0
+  const rate = t === 0 ? 7 : 5;                          // ease in, settle back a bit quicker
+  steerCur += (t - steerCur) * Math.min(1, rate * dt);
+  if (Math.abs(steerCur) < 0.01 && t === 0) steerCur = 0;
+  return steerCur;
 }
 
 // ---------- resize ----------
@@ -125,6 +133,7 @@ function buildLevel() {
 function startLevel() {
   S.state = 'play'; S.kills = 0; S.goal = goalFor(S.level); S.hp = HP_MAX; S.levelCoins = 0;
   S.enemies = []; S.parts = []; S.debris = []; S.coinsOnGround = []; S.spawnT = 1.2; S.iframes = 1.5; S.flash = 0;
+  zones.clear(); steerCur = 0;
   S.player = makeCar(WORLD / 2, WORLD / 2, -Math.PI / 2, false);
   tctx.clearRect(0, 0, trackCv.width, trackCv.height);
   buildLevel();
@@ -225,7 +234,7 @@ function update(dt) {
   if (S.state !== 'play') return;
 
   const p = S.player;
-  driveCar(p, steerInput(), dt);
+  driveCar(p, steerInput(dt), dt);
   if (engOsc) engOsc.frequency.value = 70 + Math.hypot(p.vx, p.vy) * 0.12;
   if (S.iframes > 0) S.iframes -= dt;
 
@@ -415,8 +424,12 @@ function drawHUD() {
   // level + objective
   pill(w / 2 - 46, top + 50, 92, 24, 0.3); txt('Level ' + S.level, w / 2, top + 62, 15);
   pill(w / 2 - 70, top + 80, 140, 44, 0.3); crashIcon(w / 2 - 36, top + 102); txt(`${S.kills}/${S.goal}`, w / 2 + 22, top + 102, 26);
+  if (S.state === 'play') { const z = zoneState(), hh = H / sc;
+    for (const [side, on] of [[-1, z.l || keys['arrowleft'] || keys['a']], [1, z.r || keys['arrowright'] || keys['d']]]) {
+      ctx.globalAlpha = on ? 0.55 : 0.16; const x = side < 0 ? 22 : w - 22;
+      txt(side < 0 ? '◀' : '▶', x, hh * 0.6, 30); ctx.globalAlpha = 1; } }
   if (S.msgT > 0) txt(S.msg, w / 2, top + 150, 26, '#ffd23f');
-  if (S.state === 'play' && S.t < 4 && S.level === save.best && S.kills === 0) { ctx.globalAlpha = Math.max(0, Math.min(1, 4 - S.t)); txt('Drag ◀ ▶ to steer!', w / 2, H / sc - 110, 24); txt('Make the trucks crash!', w / 2, H / sc - 78, 20, '#ffd23f'); ctx.globalAlpha = 1; }
+  if (S.state === 'play' && S.t < 4 && S.level === save.best && S.kills === 0) { ctx.globalAlpha = Math.max(0, Math.min(1, 4 - S.t)); txt('Tap LEFT / RIGHT to steer!', w / 2, H / sc - 110, 24); txt('Make the trucks crash!', w / 2, H / sc - 78, 20, '#ffd23f'); ctx.globalAlpha = 1; }
   ctx.restore();
 }
 function star(x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); for (let i = 0; i < 10; i++) { const an = -Math.PI / 2 + i * Math.PI / 5, rr2 = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(an) * rr2, y + Math.sin(an) * rr2); } ctx.fill(); }
@@ -458,5 +471,5 @@ startLevel();
 requestAnimationFrame(frame);
 
 // test / debug hook
-window.DD = { S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
+window.DD = { zones, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
 })();
