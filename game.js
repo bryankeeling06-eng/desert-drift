@@ -14,10 +14,14 @@ let W = 0, H = 0, DPR = 1, ZOOM = 1;
 
 // ---------- save ----------
 function loadSave() {
-  try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s && typeof s === 'object') return { coins: s.coins|0, best: Math.max(1, s.best|0), level: Math.max(1, s.level|0), muted: !!s.muted, map: typeof s.map === 'string' ? s.map : 'desert' }; } catch (e) {}
-  return { coins: 0, best: 1, level: 1, muted: false, map: 'desert' };
+  try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s && typeof s === 'object') return { coins: s.coins|0, best: Math.max(1, s.best|0), level: Math.max(1, s.level|0), muted: !!s.muted, map: typeof s.map === 'string' ? s.map : 'desert',
+      cars: Array.isArray(s.cars) ? [...new Set(['cyan', ...s.cars.filter(c => typeof c === 'string')])] : ['cyan'],
+      car: typeof s.car === 'string' ? s.car : 'cyan',
+      surv: { bestWaves: (s.surv && s.surv.bestWaves) | 0, bestTime: (s.surv && s.surv.bestTime) | 0 } }; } catch (e) {}
+  return { coins: 0, best: 1, level: 1, muted: false, map: 'desert', cars: ['cyan'], car: 'cyan', surv: { bestWaves: 0, bestTime: 0 } };
 }
 const save = loadSave();
+if (!save.cars.includes(save.car)) save.car = 'cyan';
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
 
 // ---------- audio ----------
@@ -83,6 +87,9 @@ addEventListener('keyup', e => { const k = e.key.toLowerCase(); keys[k] = false;
 cv.addEventListener('pointerdown', e => {
   unlockAudio(); e.preventDefault();
   if (S.state === 'maps') { mapsClick(e.clientX, e.clientY); return; }
+  if (S.state === 'shop') { shopClick(e.clientX, e.clientY); return; }
+  if (S.state === 'home') { homeClick(e.clientX, e.clientY); return; }
+  if (S.state === 'over' && S.mode === 'survival') { survOverClick(e.clientX, e.clientY); return; }
   if (S.state !== 'play') { tap(); return; }          // taps on menus only advance, never steer
   if (e.clientY < hudBottom()) return;                // HUD strip is not a steering zone
   press('p' + e.pointerId, e.clientX < W / 2 ? -1 : 1);
@@ -323,7 +330,7 @@ function drawCar(c, blink) {
   if (blink) return;
   ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.a);
   ctx.fillStyle = 'rgba(0,0,0,.18)'; rr(ctx, -c.r + 3, -c.r * 0.8 + 4, c.r * 2, c.r * 1.6, 6); ctx.fill();
-  if (c.enemy) drawEnemySkin(c.skin || MAP.enemies[0]); else drawPlayerSkin(MAP.player);
+  if (c.enemy) drawEnemySkin(c.skin || MAP.enemies[0]); else drawPlayerSkin(save.car);
   ctx.restore();
 }
 
@@ -402,7 +409,7 @@ function drawGround(p) {
 }
 
 function startLevel() {
-  S.state = 'play'; S.kills = 0; S.hits = 0; S.redFlash = 0; S.bumpT = 0; S.wallCd = 0; S.goal = goalFor(S.level); S.hp = HP_MAX; S.levelCoins = 0;
+  S.state = 'play'; S.kills = 0; S.hits = 0; S.redFlash = 0; S.bumpT = 0; S.wallCd = 0; S.goal = S.mode === 'survival' ? Infinity : goalFor(S.level); S.hp = HP_MAX; S.levelCoins = 0;
   S.enemies = []; S.parts = []; S.debris = []; S.coinsOnGround = []; S.spawnT = 1.2; S.iframes = 1.5; S.flash = 0;
   zones.clear(); steerCur = 0; nudgeT = 0;
   S.player = makeCar(WORLD / 2, WORLD / 2, -Math.PI / 2, false);
@@ -425,9 +432,10 @@ function spawnEnemy(x, y) {
     x = Math.max(40, Math.min(WORLD - 40, x)); y = Math.max(40, Math.min(WORLD - 40, y));
   }
   const e = makeCar(x, y, Math.atan2(p.y - y, p.x - x), true);
-  e.speed = 270 * Math.min(0.92, 0.78 + S.level * 0.015) * MAP.speed;
+  const sp = survParams();
+  e.speed = 270 * (S.mode === 'survival' ? sp.speed : Math.min(0.92, 0.78 + S.level * 0.015)) * MAP.speed;
   e.skin = MAP.enemies[Math.floor(Math.random() * MAP.enemies.length)];
-  e.turn = Math.min(2.3, 1.6 + S.level * 0.05);
+  e.turn = S.mode === 'survival' ? sp.turn : Math.min(2.3, 1.6 + S.level * 0.05);
   e.vx = Math.cos(e.a) * e.speed * 0.6; e.vy = Math.sin(e.a) * e.speed * 0.6;
   S.enemies.push(e); S.stats.spawns++;
   return e;
@@ -478,6 +486,8 @@ function bump(holder, key) {
 function gameOver(why) {
   S.state = 'over'; S.overT = 0; S.overWhy = why; S.shake = 12;
   explode(S.player.x, S.player.y, false);
+  if (S.mode === 'survival') { S.survNewBest = S.wave > save.surv.bestWaves || (S.wave === save.surv.bestWaves && Math.floor(S.survT) > save.surv.bestTime);
+    save.surv.bestWaves = Math.max(save.surv.bestWaves, S.wave); save.surv.bestTime = Math.max(save.surv.bestTime, Math.floor(S.survT)); }
   save.coins = S.coins; persist();
   beep(392, 0.18, 'triangle', 0.18); setTimeout(() => beep(330, 0.18, 'triangle', 0.18), 170); setTimeout(() => beep(262, 0.35, 'triangle', 0.18), 340);
 }
@@ -527,7 +537,7 @@ function update(dt) {
     if (S.clearT > 1.6) { S.state = 'clear'; S.clearT = 0; S.tally = 0; beep(523, 0.15, 'triangle', 0.2); setTimeout(() => beep(784, 0.25, 'triangle', 0.2), 150); }
     return;
   }
-  if (S.state === 'maps') { S.mapsT += dt; return; }
+  if (S.state === 'maps' || S.state === 'shop' || S.state === 'home') { S.mapsT = (S.mapsT || 0) + dt; return; }
   if (S.state === 'over') { S.overT += dt; return; }
   if (S.state === 'clear') { S.clearT += dt; S.tally = Math.min(S.levelCoins + bonus(), S.tally + dt * 30); return; }
   if (S.state !== 'play') return;
@@ -539,10 +549,11 @@ function update(dt) {
 
   // spawn
   S.spawnT -= dt;
-  const maxE = Math.min(9, 3 + Math.floor(S.level / 2));
+  const sp = survParams(), surv = S.mode === 'survival';
+  const maxE = surv ? sp.maxE : Math.min(9, 3 + Math.floor(S.level / 2));
   if (S.spawnT <= 0) {
     if (S.enemies.length < maxE) spawnEnemy();
-    S.spawnT = Math.max(0.9, 2.2 - S.level * 0.08);
+    S.spawnT = surv ? sp.interval : Math.max(0.9, 2.2 - S.level * 0.08);
   }
   // enemies: blindly chase
   for (const e of S.enemies) {
@@ -563,7 +574,7 @@ function update(dt) {
   }
   if (dead.size) {
     S.enemies = S.enemies.filter(e => !dead.has(e));
-    S.kills = Math.min(S.goal, S.kills + dead.size);
+    S.kills = S.mode === 'survival' ? S.kills + dead.size : Math.min(S.goal, S.kills + dead.size);
     beep(660, 0.1, 'square', 0.1); setTimeout(() => beep(880, 0.12, 'square', 0.1), 80);
   }
   // enemy-player
@@ -586,11 +597,15 @@ function update(dt) {
   // coins
   for (const c of S.coinsOnGround) {
     c.t += dt;
-    if (Math.hypot(c.x - p.x, c.y - p.y) < p.r + 22) { c.got = true; S.coins++; S.levelCoins++; S.stats.coinsPicked++; save.coins = S.coins; persist(); beep(1200, 0.08, 'square', 0.12); setTimeout(() => beep(1600, 0.1, 'square', 0.12), 60); }
+    if (Math.hypot(c.x - p.x, c.y - p.y) < p.r + 22) { c.got = true; S.coins++; S.levelCoins++; S.stats.coinsPicked++; if (S.mode === 'survival') S.survCoins++; save.coins = S.coins; persist(); beep(1200, 0.08, 'square', 0.12); setTimeout(() => beep(1600, 0.1, 'square', 0.12), 60); }
   }
   S.coinsOnGround = S.coinsOnGround.filter(c => !c.got);
 
-  if (S.kills >= S.goal) levelDone();
+  if (S.mode === 'survival') {
+    S.survT += dt;
+    const w = 1 + Math.floor(S.survT / WAVE_S);
+    if (w > S.wave) { const bonusC = (w - S.wave) * WAVE_COINS; S.wave = w; S.coins += bonusC; S.survCoins += bonusC; save.coins = S.coins; persist(); S.msg = 'Wave ' + w + '! +' + WAVE_COINS + ' coins'; S.msgT = 1.6; beep(784, 0.12, 'triangle', 0.15); setTimeout(() => beep(1046, 0.18, 'triangle', 0.15), 120); }
+  } else if (S.kills >= S.goal) levelDone();
 }
 function bonus() { return 5 + S.level; }
 function levelDone() {
@@ -602,12 +617,14 @@ function levelDone() {
   const before = save.best;
   save.best = Math.max(save.best, S.level + 1); save.level = S.level + 1; persist();
   const nm = MAPS.find(m => m.unlock > before && m.unlock <= save.best); S.newMap = nm ? nm.name : '';
+  S.nextMap = randomMap(MAP.id); save.map = S.nextMap; persist();   // shuffle: next level on a random unlocked map
   beep(523, 0.12, 'triangle', 0.2); setTimeout(() => beep(659, 0.12, 'triangle', 0.2), 110); setTimeout(() => beep(784, 0.3, 'triangle', 0.2), 220);
   // confetti
   for (let i = 0; i < 40; i++) { const an = -Math.PI / 2 + (Math.random() - 0.5) * 2.2, sp = 150 + Math.random() * 250; S.parts.push({ x: S.player.x, y: S.player.y - 30, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, r: 4, life: 1.5, max: 1.5, confetti: ['#ff4f7b','#ffd23f','#3ee0ff','#7cff6b','#b06bff'][i % 5] }); }
 }
 function tap() {
-  if (S.state === 'over' && S.overT > 0.7) { S.coins = save.coins; S.msgT = 0; startLevel(); beep(660, 0.08, 'square', 0.1); return; }
+  if (S.state === 'home') { startCampaign(); return; }
+  if (S.state === 'over' && S.overT > 0.7) { if (S.mode === 'survival') { startSurvival(); return; } S.coins = save.coins; S.msgT = 0; startLevel(); beep(660, 0.08, 'square', 0.1); return; }
   if (S.state === 'clear' && S.clearT > 0.6) { S.level++; S.coins = save.coins; startLevel(); beep(880, 0.08, 'square', 0.1); }
 }
 
@@ -680,8 +697,13 @@ function drawHUD() {
   const ct = String(S.coins); ctx.font = '900 24px "Trebuchet MS",system-ui'; const tw = ctx.measureText(ct).width;
   drawCoin(w - 30 - tw - 22, top + 16, 15, 0); txt(ct, w - 18, top + 17, 24, '#fff', 'right');
   // level + objective
-  pill(w / 2 - 46, top + 50, 92, 24, 0.3); txt('Level ' + S.level, w / 2, top + 62, 15);
-  pill(w / 2 - 70, top + 80, 140, 44, 0.3); crashIcon(w / 2 - 36, top + 102); txt(`${S.kills}/${S.goal}`, w / 2 + 22, top + 102, 26);
+  if (S.mode === 'survival') {
+    pill(w / 2 - 50, top + 50, 100, 24, 0.3); txt('Wave ' + S.wave, w / 2, top + 62, 16, '#ffd23f');
+    pill(w / 2 - 80, top + 80, 160, 44, 0.3); txt('⏱ ' + fmtTime(S.survT), w / 2 - 22, top + 102, 22); crashIcon(w / 2 + 38, top + 102); txt(String(S.kills), w / 2 + 62, top + 102, 20, '#fff', 'left');
+  } else {
+    pill(w / 2 - 46, top + 50, 92, 24, 0.3); txt('Level ' + S.level, w / 2, top + 62, 15);
+    pill(w / 2 - 70, top + 80, 140, 44, 0.3); crashIcon(w / 2 - 36, top + 102); txt(`${S.kills}/${S.goal}`, w / 2 + 22, top + 102, 26);
+  }
   if (S.state === 'play') { const z = zoneState(), hh = H / sc;
     for (const [side, lv] of [[-1, z.l], [1, z.r]]) {
       ctx.globalAlpha = lv === 2 ? 0.7 + 0.25 * Math.sin(S.t * 14) : lv === 1 ? 0.4 : 0.16;
@@ -709,7 +731,8 @@ function drawClear() {
   ctx.font = '36px system-ui,"Apple Color Emoji",sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🎁', 110, -20);
   txt(prog >= 1 ? 'Gift unlocked!' : `${Math.round(prog * 5)}/5 to a gift`, -20, 6, 15);
   drawCoin(-40, 50, 20, 0); txt('+' + Math.floor(S.tally), 20, 51, 36, '#fff');
-  if (S.newMap) txt('New map unlocked: ' + S.newMap + '!', 0, 88, 20, '#7cff6b');
+  if (S.newMap) txt('New map unlocked: ' + S.newMap + '!', 0, -192, 20, '#7cff6b');
+  txt('Next: ' + mapById(save.map).name + '!', 0, 82, 19, '#9fe3ff');
   if (t > 0.6) txt('🗺️ button = pick a map', 0, 180, 15);
   if (t > 0.6) { const pulse = 1 + Math.sin(t * 5) * 0.05; ctx.save(); ctx.translate(0, 130); ctx.scale(pulse, pulse); ctx.fillStyle = '#22c55e'; rr(ctx, -130, -32, 260, 64, 32); ctx.fill(); txt('Tap to Continue', 0, 0, 26); ctx.restore(); }
   ctx.restore();
@@ -721,6 +744,18 @@ function drawOver() {
   ctx.save(); ctx.translate(cx, cy); ctx.scale(s, s);
   ctx.fillStyle = 'rgba(255,255,255,.12)'; rr(ctx, -170, -200, 340, 380, 30); ctx.fill();
   ctx.font = '64px system-ui,"Apple Color Emoji",sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('💫', 0, -140);
+  if (S.mode === 'survival') {
+    txt('Crashed out!', 0, -80, 34, '#ffd23f');
+    txt('You lasted ' + S.wave + (S.wave === 1 ? ' wave' : ' waves') + '!', 0, -42, 26);
+    txt(fmtTime(S.survT) + ' • ' + S.kills + ' crashes', 0, -8, 20);
+    drawCoin(-110, 30, 16, 0); txt('+' + S.survCoins + ' coins earned', 15, 31, 20);
+    txt(S.survNewBest ? 'New best! ⭐' : 'Best: ' + save.surv.bestWaves + ' waves', 0, 64, 18, '#7cff6b');
+    ctx.restore();
+    if (t > 0.7) { const L = survOverLayout();
+      ctx.fillStyle = '#22c55e'; rr(ctx, L.retry.x, L.retry.y, L.retry.w, L.retry.h, L.retry.h / 2); ctx.fill(); txt('Tap to Retry', L.retry.x + L.retry.w / 2, L.retry.y + L.retry.h / 2, 24);
+      ctx.fillStyle = '#3b82f6'; rr(ctx, L.menu.x, L.menu.y, L.menu.w, L.menu.h, L.menu.h / 2); ctx.fill(); txt('🏠 Menu', L.menu.x + L.menu.w / 2, L.menu.y + L.menu.h / 2, 22); }
+    return;
+  }
   txt('Crashed out!', 0, -75, 38, '#ffd23f');
   txt('Good try! You reached', 0, -30, 18);
   txt('Level ' + S.level, 0, 4, 30);
@@ -736,6 +771,7 @@ function selectMap(id) {
   const m = mapById(id); if (m.id !== id || !isUnlocked(m)) return false;
   save.map = id; persist();
   if (S.mapsFrom === 'clear') S.level++;
+  S.mode = 'level';
   S.coins = save.coins; S.msgT = 0; startLevel(); beep(880, 0.08, 'square', 0.1);
   return true;
 }
@@ -776,17 +812,147 @@ function drawMaps() {
     if (!open) { ctx.font = '28px system-ui,"Apple Color Emoji",sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🔒', c.x + c.w / 2, c.y + (c.h - 34) / 2 - 12); txt('Reach Level ' + m.unlock + '!', c.x + c.w / 2, c.y + (c.h - 34) / 2 + 20, Math.min(16, c.w / 10), '#ffd23f'); }
   }
   MAP = keep;
-  ctx.fillStyle = '#22c55e'; rr(ctx, L.back.x, L.back.y, L.back.w, L.back.h, 29); ctx.fill(); txt(S.mapsFrom === 'clear' ? 'Keep this map ▶' : 'Back ▶', W / 2, L.back.y + 29, 22);
+  ctx.fillStyle = '#22c55e'; rr(ctx, L.back.x, L.back.y, L.back.w, L.back.h, 29); ctx.fill(); txt(S.mapsFrom === 'clear' ? 'Keep shuffle ▶' : 'Back ▶', W / 2, L.back.y + 29, 22);
   if (S.lockMsg) txt(S.lockMsg, W / 2, Math.max(80, L.back.y - 14), 15, '#ffd23f');
 }
+// ---------- shuffle ----------
+function randomMap(exclude) {
+  const ids = unlockedMaps(), pool = ids.length > 1 ? ids.filter(id => id !== exclude) : ids;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+function fmtTime(t) { t = Math.floor(t); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); }
+
+// ---------- modes ----------
+// Survival: endless; a new wave every WAVE_S seconds (+WAVE_COINS coins). Same combat rules as levels.
+const WAVE_S = 20, WAVE_COINS = 3;
+function survParams() {
+  const w = S.wave || 1;
+  return { maxE: Math.min(12, 3 + w), interval: Math.max(0.6, 2.0 - w * 0.12), speed: Math.min(0.95, 0.8 + w * 0.02), turn: Math.min(2.4, 1.6 + w * 0.06) };
+}
+function startSurvival() {
+  S.mode = 'survival'; S.wave = 1; S.survT = 0; S.survCoins = 0; S.survNewBest = false;
+  save.map = randomMap(MAP.id); persist();
+  S.coins = save.coins; S.msg = 'Survive! Wave 1'; S.msgT = 1.6; startLevel();
+}
+function startCampaign() { S.mode = 'level'; S.level = save.level; S.coins = save.coins; S.msgT = 0; startLevel(); beep(880, 0.08, 'square', 0.1); }
+function goHome() { S.mode = 'level'; S.level = save.level; S.coins = save.coins; startLevel(); S.state = 'home'; S.mapsT = 0; }
+function survOverLayout() {
+  const w = Math.min(260, W - 60), y = Math.min(H - 150, H * 0.42 + 120 * Math.min(1, W / 400, H / 640));
+  return { retry: { x: W / 2 - w / 2, y, w, h: 60 }, menu: { x: W / 2 - w / 2, y: y + 72, w, h: 54 } };
+}
+const inR = (r, x, y) => x > r.x && x < r.x + r.w && y > r.y && y < r.y + r.h;
+function survOverClick(x, y) {
+  if (S.overT <= 0.7) return;
+  const L = survOverLayout();
+  if (inR(L.menu, x, y)) { goHome(); return; }
+  startSurvival();
+}
+
+// ---------- home ----------
+const homeBtn = document.getElementById('home');
+homeBtn.addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); unlockAudio(); goHome(); });
+function homeLayout() {
+  const w = Math.min(340, W - 40), x = W / 2 - w / 2, top = Math.max(170, H * 0.28);
+  const half = (w - 14) / 2;
+  return { play: { x, y: top, w, h: 84 }, surv: { x, y: top + 100, w, h: 96 },
+    shop: { x, y: top + 212, w: half, h: 64 }, maps: { x: x + half + 14, y: top + 212, w: half, h: 64 } };
+}
+function homeClick(x, y) {
+  const L = homeLayout();
+  if (inR(L.play, x, y)) startCampaign();
+  else if (inR(L.surv, x, y)) startSurvival();
+  else if (inR(L.shop, x, y)) openShop();
+  else if (inR(L.maps, x, y)) openMaps();
+}
+function bigBtn(r, col, title, sub, tsz = 30) {
+  ctx.fillStyle = 'rgba(0,0,0,.25)'; rr(ctx, r.x, r.y + 5, r.w, r.h, 22); ctx.fill();
+  ctx.fillStyle = col; rr(ctx, r.x, r.y, r.w, r.h, 22); ctx.fill();
+  txt(title, r.x + r.w / 2, r.y + (sub ? r.h * 0.36 : r.h / 2), tsz);
+  if (sub) txt(sub, r.x + r.w / 2, r.y + r.h * 0.72, 15, '#fff6c9');
+}
+function drawHome() {
+  ctx.fillStyle = 'rgba(30,20,50,.55)'; ctx.fillRect(0, 0, W, H);
+  const L = homeLayout(), ty = Math.max(60, L.play.y - 90);
+  txt('Crash Maps', W / 2, ty, Math.min(50, W / 8), '#ffd23f');
+  txt('Tap to nudge, hold to spin.', W / 2, ty + 40, 16); txt('Make the chasers crash into each other!', W / 2, ty + 62, Math.min(16, W / 25));
+  bigBtn(L.play, '#22c55e', '▶ Play', 'Level ' + save.level + ' • ' + mapById(save.map).name);
+  bigBtn(L.surv, '#f97316', '⏱ Survival', 'How long can you last?' + (save.surv.bestWaves ? '  Best: ' + save.surv.bestWaves + ' waves' : ''), 32);
+  bigBtn(L.shop, '#8b5cf6', '🚗 Shop', null, 22);
+  bigBtn(L.maps, '#3b82f6', '🗺️ Maps', null, 22);
+  drawCoin(W / 2 - 40, L.maps.y + 100, 16, 0); txt(String(save.coins), W / 2 - 16, L.maps.y + 101, 24, '#fff', 'left');
+}
+
+// ---------- car shop ----------
+const CARS = [
+  { id: 'cyan', name: 'Zippy', price: 0 },
+  { id: 'cop', name: 'Police Car', price: 20 },
+  { id: 'icecream', name: 'Ice Cream Truck', price: 60 },
+  { id: 'kart', name: 'Go-Kart', price: 120 },
+  { id: 'buggy', name: 'Lifeguard Buggy', price: 200 },
+  { id: 'unicorn', name: 'Unicorn Car', price: 300 },
+];
+const shopBtn = document.getElementById('shop');
+shopBtn.addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); unlockAudio(); S.state === 'shop' ? closeShop() : openShop(); });
+function openShop() { if (S.state === 'shop' || S.state === 'celebrate') return; if (S.state === 'maps') closeMaps(); S.shopFrom = S.state; S.state = 'shop'; S.shopMsg = ''; zones.clear(); }
+function closeShop() { if (S.state === 'shop') S.state = S.shopFrom || 'play'; }
+function buyCar(id) {
+  const c = CARS.find(k => k.id === id); if (!c) return false;
+  if (save.cars.includes(id)) return equipCar(id);
+  if (save.coins < c.price) { S.shopMsg = 'Need ' + (c.price - save.coins) + ' more coins'; beep(180, 0.15, 'triangle', 0.12); return false; }
+  save.coins -= c.price; S.coins = save.coins; save.cars.push(id); save.car = id; persist();
+  S.shopMsg = 'You got the ' + c.name + '! 🎉'; beep(988, 0.1, 'square', 0.12); setTimeout(() => beep(1318, 0.16, 'square', 0.12), 100);
+  return true;
+}
+function equipCar(id) { if (!save.cars.includes(id)) return false; save.car = id; persist(); S.shopMsg = ''; beep(660, 0.08, 'square', 0.1); return true; }
+function shopLayout() {
+  const cols = W > H ? 2 : 1, gap = 10, top = 92, foot = 84, rows = Math.ceil(CARS.length / cols);
+  const w = Math.min(420, (W - gap * (cols + 1)) / cols), h = Math.max(56, Math.min(86, (H - top - foot - gap * (rows - 1)) / rows));
+  const x0 = (W - (cols * w + (cols - 1) * gap)) / 2;
+  const rowsL = CARS.map((c, i) => { const x = x0 + (i % cols) * (w + gap), y = top + Math.floor(i / cols) * (h + gap); return { id: c.id, x, y, w, h, btn: { x: x + w - 132, y: y + h / 2 - 24, w: 120, h: 48 } }; });
+  const done = { x: W / 2 - 110, y: Math.min(H - 70, top + rows * (h + gap) + 10), w: 220, h: 56 };
+  return { rows: rowsL, done };
+}
+function shopClick(x, y) {
+  const L = shopLayout();
+  if (inR(L.done, x, y)) { closeShop(); return; }
+  for (const r of L.rows) if (inR(r, x, y)) { buyCar(r.id); return; }   // whole row is the button: big target
+}
+function drawShop() {
+  ctx.fillStyle = 'rgba(30,20,50,.86)'; ctx.fillRect(0, 0, W, H);
+  txt('Car Shop', W / 2, 32, 30, '#ffd23f');
+  drawCoin(W / 2 - 30, 66, 13, 0); txt(String(save.coins), W / 2 - 12, 67, 20, '#fff', 'left');
+  const L = shopLayout();
+  for (const r of L.rows) {
+    const c = CARS.find(k => k.id === r.id), owned = save.cars.includes(c.id), eq = save.car === c.id, afford = save.coins >= c.price;
+    ctx.fillStyle = eq ? 'rgba(255,210,63,.25)' : 'rgba(255,255,255,.1)'; rr(ctx, r.x, r.y, r.w, r.h, 16); ctx.fill();
+    if (eq) { ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 3; rr(ctx, r.x, r.y, r.w, r.h, 16); ctx.stroke(); }
+    ctx.save(); ctx.translate(r.x + 46, r.y + r.h / 2); ctx.scale(2, 2); ctx.rotate(-0.3); if (!owned) ctx.globalAlpha = 0.85; drawPlayerSkin(c.id); ctx.restore();
+    txt(c.name, r.x + 92, r.y + r.h / 2 - (owned ? 0 : 10), c.name.length > 12 ? Math.min(15, r.w / 26) : Math.min(19, r.w / 18), '#fff', 'left');
+    if (!owned) { drawCoin(r.x + 102, r.y + r.h / 2 + 14, 9, 0); txt(String(c.price), r.x + 116, r.y + r.h / 2 + 15, 16, '#ffd23f', 'left'); }
+    const b = r.btn;
+    let col, label;
+    if (eq) { col = '#64748b'; label = '✓ Driving'; }
+    else if (owned) { col = '#3b82f6'; label = 'Equip'; }
+    else if (afford) { col = '#22c55e'; label = 'Buy'; }
+    else { col = 'rgba(120,120,140,.6)'; label = 'Need ' + (c.price - save.coins); }
+    ctx.fillStyle = col; rr(ctx, b.x, b.y, b.w, b.h, 24); ctx.fill();
+    txt(label, b.x + b.w / 2, b.y + b.h / 2, label.length > 8 ? 15 : 20, afford || owned ? '#fff' : '#ddd');
+  }
+  ctx.fillStyle = '#22c55e'; rr(ctx, L.done.x, L.done.y, L.done.w, L.done.h, 28); ctx.fill(); txt('Done ▶', W / 2, L.done.y + 28, 22);
+  if (S.shopMsg) txt(S.shopMsg, W / 2, Math.max(84, L.done.y - 14), 16, '#7cff6b');
+}
+
 function render() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   drawWorld();
-  if (S.state !== 'clear' && S.state !== 'over' && S.state !== 'maps') drawHUD();
+  if (!['clear', 'over', 'maps', 'shop', 'home'].includes(S.state)) drawHUD();
   if (S.state === 'clear') drawClear();
   if (S.state === 'over') drawOver();
   if (S.state === 'maps') drawMaps();
-  mapsBtn.style.display = S.state === 'celebrate' ? 'none' : 'block';
+  if (S.state === 'shop') drawShop();
+  if (S.state === 'home') drawHome();
+  shopBtn.style.display = mapsBtn.style.display = S.state === 'celebrate' ? 'none' : 'block';
+  homeBtn.style.display = S.state === 'home' || S.state === 'celebrate' ? 'none' : 'block';
   if (S.redFlash > 0) { ctx.fillStyle = `rgba(255,60,60,${S.redFlash * 0.6})`; ctx.fillRect(0, 0, W, H); }
   if (S.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${Math.min(1, S.flash)})`; ctx.fillRect(0, 0, W, H); }
 }
@@ -797,9 +963,11 @@ function frame(now) {
   update(dt); render();
   requestAnimationFrame(frame);
 }
+S.mode = 'level';
 startLevel();
+if (!window.DD_SKIP_HOME) S.state = 'home';
 requestAnimationFrame(frame);
 
 // test / debug hook
-window.DD = { MAPS, get MAP() { return MAP; }, unlockedMaps, selectMap, openMaps, closeMaps, mapsLayout, COMBAT: { TRUCK_DMG, MAX_HITS, CAR_IFRAMES, BUMP_DMG, BUMP_CD, BUMP_GLOBAL_CD }, zones, TUNE: { HOLD_MS, TAP_STEER, HOLD_STEER, NUDGE_STEER, NUDGE_S }, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
+window.DD = { CARS, buyCar, equipCar, openShop, closeShop, shopLayout, homeLayout, survOverLayout, startSurvival, startCampaign, goHome, survParams, randomMap, WAVE_S, WAVE_COINS, MAPS, get MAP() { return MAP; }, unlockedMaps, selectMap, openMaps, closeMaps, mapsLayout, COMBAT: { TRUCK_DMG, MAX_HITS, CAR_IFRAMES, BUMP_DMG, BUMP_CD, BUMP_GLOBAL_CD }, zones, TUNE: { HOLD_MS, TAP_STEER, HOLD_STEER, NUDGE_STEER, NUDGE_S }, get steer() { return steerCur; }, S, spawnEnemy, save, SAVE_KEY, levelDone, startLevel };
 })();

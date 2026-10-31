@@ -4,8 +4,16 @@ A cartoony top-down drift game for kids. Your little car never stops driving —
 
 **Play:** https://bryankeeling06-eng.github.io/desert-drift/
 
+## Home screen
+- **▶ Play** — the level game (one level counter for everything).
+- **⏱ Survival** — "How long can you last?" Endless waves: a new wave every 20 s (+3 coins each); every wave brings more, faster chasers. Same health rules: 3 truck hits and you crash out. Your best is saved.
+- **🚗 Shop** — spend coins on cars: Zippy (free), Police Car 20, Ice Cream Truck 60, Go-Kart 120, Lifeguard Buggy 200, Unicorn Car 300. Your car drives on every map.
+- **🗺️ Maps** — pick any unlocked map. Otherwise each new level picks a random unlocked map (never the same one twice in a row) and Level Complete tells you what's next.
+
+The 🗺️ 🚗 buttons (bottom-left) and 🏠 🔊 buttons (bottom-right) work any time.
+
 ## Maps
-One level counter for the whole game; pick any unlocked map with the 🗺️ button (bottom-left, also on the Level Complete screen). Maps unlock by the best level you've reached:
+Maps unlock by the best level you've reached:
 
 | Map | Unlock | You drive | Chasers | Obstacles |
 |---|---|---|---|---|
